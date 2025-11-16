@@ -7,13 +7,28 @@ import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import Database from "better-sqlite3";
 import { OpenAI } from "openai";
 import cron from "node-cron";
+import { MongoClient } from "mongodb";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4040;
-const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5173";
+const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5177";
+const CALLBACK_URL = (() => {
+  try {
+    return new URL("/auth/google/callback", CLIENT_URL).toString();
+  } catch {
+    const base = CLIENT_URL.endsWith("/") ? CLIENT_URL.slice(0, -1) : CLIENT_URL;
+    return `${base}/auth/google/callback`;
+  }
+})();
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev_secret";
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
+const MONGODB_URI = process.env.MONGODB_URI || "";
+const ODDS_API_KEY = process.env.ODDS_API_KEY || "";
+const ODDS_API_SPORTS = (process.env.ODDS_API_SPORTS || "soccer_epl,soccer_spain_la_liga,soccer_germany_bundesliga,soccer_italy_serie_a,soccer_uefa_champs_league")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 // Database setup (SQLite)
 const db = new Database("data.sqlite");
@@ -69,6 +84,16 @@ if (leaguesCount.c === 0) {
   insertLeague.run("bundesliga", "Bundesliga", "BL", "Germany");
   insertLeague.run("seriea", "Serie A", "SA", "Italy");
 }
+// Ensure UEFA Champions League exists
+const uclExists = db.prepare("SELECT 1 FROM leagues WHERE id = ?").get("ucl");
+if (!uclExists) {
+  db.prepare("INSERT INTO leagues (id, name, code, country) VALUES (?, ?, ?, ?)").run(
+    "ucl",
+    "UEFA Champions League",
+    "UCL",
+    "UEFA"
+  );
+}
 
 // Middlewares
 app.use(cors({ origin: CLIENT_URL, credentials: true }));
@@ -82,6 +107,17 @@ app.use(
 );
 app.use(passport.initialize());
 app.use(passport.session());
+
+// MongoDB setup (optional, if MONGODB_URI configured)
+let mongoClient: MongoClient | null = null;
+async function getMongoDb() {
+  if (!MONGODB_URI) return null;
+  if (!mongoClient) {
+    mongoClient = new MongoClient(MONGODB_URI);
+    await mongoClient.connect();
+  }
+  return mongoClient.db();
+}
 
 // Passport Google OAuth
 passport.serializeUser((user: any, done) => {
@@ -98,19 +134,40 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
       {
         clientID: process.env.GOOGLE_CLIENT_ID!,
         clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
-        callbackURL: "/auth/google/callback",
+        callbackURL: CALLBACK_URL,
+        skipProfile: true,
       },
-      (accessToken, refreshToken, profile, done) => {
+      async (accessToken, refreshToken, _profile, done) => {
         try {
-          const email = profile.emails?.[0]?.value;
-          if (!email) return done(new Error("Email is required"));
-          const id = profile.id;
-          const name = profile.displayName;
+          // Manually fetch user profile to avoid InternalOAuthError
+          let userinfo: any | null = null;
+          const endpoints = [
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+          ];
+          for (const url of endpoints) {
+            try {
+              const r = await fetch(url, {
+                headers: { Authorization: `Bearer ${accessToken}` },
+              });
+              if (r.ok) {
+                userinfo = await r.json();
+                break;
+              }
+            } catch {
+              // try next endpoint
+            }
+          }
+          if (!userinfo) return done(new Error("Failed to fetch Google userinfo"));
+          const email = userinfo.email;
+          const id = userinfo.sub || userinfo.id;
+          const name = userinfo.name || [userinfo.given_name, userinfo.family_name].filter(Boolean).join(" ");
+          if (!email || !id) return done(new Error("Email or id missing from Google profile"));
           const upsert = db.prepare(`
             INSERT INTO users (id, email, name) VALUES (?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET email=excluded.email, name=excluded.name
           `);
-          upsert.run(id, email, name);
+          upsert.run(id, email, name || null);
           const user = db.prepare("SELECT id, email, name FROM users WHERE id = ?").get(id);
           return done(null, user);
         } catch (e) {
@@ -126,7 +183,7 @@ app.get("/auth/google", (req, res, next) => {
   if (!passport._strategy("google")) {
     return res.status(500).send("Google OAuth not configured");
   }
-  return (passport.authenticate("google", { scope: ["profile", "email"] }) as any)(req, res, next);
+  return (passport.authenticate("google", { scope: ["openid", "email", "profile"] }) as any)(req, res, next);
 });
 
 app.get(
@@ -167,10 +224,20 @@ app.get("/api/leagues", (req, res) => {
   res.json(leagues);
 });
 
-app.get("/api/matches/upcoming", (req, res) => {
+app.get("/api/matches/upcoming", async (req, res) => {
   const { leagueId, days } = req.query as { leagueId?: string; days?: string };
   const now = Date.now();
   const until = now + (Number(days || 7) * 24 * 60 * 60 * 1000);
+  // If Odds API configured, refresh data and clean placeholders
+  if (ODDS_API_KEY) {
+    try {
+      // Remove placeholder seeded matches like "Team A" vs "Team B"
+      db.prepare(`DELETE FROM matches WHERE homeTeamName LIKE 'Team %' AND awayTeamName LIKE 'Team %'`).run();
+      await fetchAndUpsertLiveOdds({ days: Number(days || 7) });
+    } catch {
+      // ignore fetch/cleanup errors; fallback to existing data
+    }
+  }
   let rows: any[];
   if (leagueId) {
     rows = db.prepare(
@@ -187,7 +254,14 @@ app.get("/api/matches/upcoming", (req, res) => {
        ORDER BY m.matchDate ASC`
     ).all(now, until);
   }
-  const matches = rows.map((r) => ({
+  // Filter out placeholder teams like "Team A", "Team B"
+  const isPlaceholder = (name?: string) =>
+    !name ||
+    /^team\s+/i.test(name) ||
+    name.toLowerCase() === "home team" ||
+    name.toLowerCase() === "away team";
+  const filtered = rows.filter((r) => !(isPlaceholder(r.homeTeamName) || isPlaceholder(r.awayTeamName)));
+  const matches = filtered.map((r) => ({
     id: r.id,
     leagueId: r.leagueId,
     league: { id: r.leagueId, name: r.leagueName, code: r.leagueCode, country: r.leagueCountry },
@@ -205,12 +279,81 @@ app.get("/api/matches/upcoming", (req, res) => {
 app.get("/api/predictions/high-confidence", (req, res) => {
   const minConfidence = Number((req.query.minConfidence as string) || 70);
   const limit = Number((req.query.limit as string) || 10);
-  const preds = db.prepare(
-    `SELECT p.id, p.matchId, p.prediction, p.confidence, p.reasoning
-     FROM predictions p WHERE p.confidence >= ?
+  // Cleanup any predictions tied to placeholder teams
+  db.prepare(
+    `DELETE FROM predictions WHERE matchId IN (
+      SELECT id FROM matches 
+      WHERE LOWER(homeTeamName) LIKE 'team %' 
+         OR LOWER(awayTeamName) LIKE 'team %'
+         OR LOWER(homeTeamName) IN ('home team') 
+         OR LOWER(awayTeamName) IN ('away team')
+    )`
+  ).run();
+  const rows = db.prepare(
+    `SELECT 
+       p.id as pid, p.matchId, p.prediction as pred, p.confidence as conf, p.reasoning as reason,
+       m.id as mid, m.leagueId, m.matchDate, m.homeTeamName, m.awayTeamName, m.homeWinOdds, m.drawOdds, m.awayWinOdds,
+       l.name as leagueName, l.code as leagueCode, l.country as leagueCountry
+     FROM predictions p
+     JOIN matches m ON m.id = p.matchId
+     JOIN leagues l ON l.id = m.leagueId
+     WHERE p.confidence >= ?
      ORDER BY p.confidence DESC LIMIT ?`
   ).all(minConfidence, limit) as any[];
-  res.json(preds);
+  const isPlaceholder = (name?: string) => {
+    if (!name) return true;
+    const n = String(name).toLowerCase();
+    return /^team\s+/.test(n) || n === "home team" || n === "away team";
+  };
+  const result = rows
+    .filter((r) => !(isPlaceholder(r.homeTeamName) || isPlaceholder(r.awayTeamName)))
+    .map((r) => ({
+    prediction: {
+      id: r.pid,
+      matchId: r.matchId,
+      prediction: r.pred,
+      confidence: r.conf,
+      reasoning: r.reason,
+    },
+    match: {
+      id: r.mid,
+      leagueId: r.leagueId,
+      league: { id: r.leagueId, name: r.leagueName, code: r.leagueCode, country: r.leagueCountry },
+      homeTeam: { id: `${r.mid}:home`, name: r.homeTeamName },
+      awayTeam: { id: `${r.mid}:away`, name: r.awayTeamName },
+      matchDate: r.matchDate,
+      homeWinOdds: r.homeWinOdds,
+      drawOdds: r.drawOdds,
+      awayWinOdds: r.awayWinOdds,
+    },
+    }));
+  res.json(result);
+});
+
+app.post("/api/predictions/generate", requireUser, async (req, res) => {
+  const { matchId } = req.body || {};
+  if (!matchId || typeof matchId !== "string") {
+    return res.status(400).json({ error: "matchId required" });
+  }
+  const m = db.prepare("SELECT id, homeTeamName, awayTeamName, homeWinOdds, drawOdds, awayWinOdds FROM matches WHERE id = ?").get(matchId);
+  if (!m) {
+    return res.status(404).json({ error: "Match not found" });
+  }
+  const isPlaceholder = (name?: string) => {
+    if (!name) return true;
+    const n = String(name).toLowerCase();
+    return /^team\s+/.test(n) || n === "home team" || n === "away team";
+  };
+  if (isPlaceholder(m.homeTeamName) || isPlaceholder(m.awayTeamName)) {
+    return res.status(400).json({ error: "Predictions disabled for placeholder teams" });
+  }
+  try {
+    const { probs } = await generatePredictionForMatch(m);
+    const prediction = db.prepare("SELECT id, matchId, prediction, confidence, reasoning FROM predictions WHERE matchId = ?").get(matchId);
+    return res.json({ ok: true, prediction, probs });
+  } catch (e) {
+    return res.status(500).json({ error: "Failed to generate prediction" });
+  }
 });
 
 app.get("/api/recommendations/today", (req, res) => {
@@ -227,8 +370,15 @@ app.get("/api/recommendations/today", (req, res) => {
      ORDER BY m.matchDate ASC`
   ).all(start.getTime(), end.getTime()) as any[];
 
+  const isPlaceholder = (name?: string) =>
+    !name ||
+    /^team\s+/i.test(name) ||
+    name.toLowerCase() === "home team" ||
+    name.toLowerCase() === "away team";
+
   const matches = rows
     .filter((r) => r.predictionId)
+    .filter((r) => !(isPlaceholder(r.homeTeamName) || isPlaceholder(r.awayTeamName)))
     .map((r) => {
       const recommendationType = r.conf >= 85 ? "safe" : r.conf >= 70 ? "value" : "risky";
       return {
@@ -307,11 +457,14 @@ async function generatePredictionForMatch(match: {
   homeWinOdds?: number;
   drawOdds?: number;
   awayWinOdds?: number;
-}) {
+}): Promise<{ probs?: { home: number; draw: number; away: number } }> {
+  // Blend historical priors from MongoDB if available
+  const priors = await getHistoricalPriors(match.homeTeamName, match.awayTeamName);
   const prompt = `
 You are an expert football betting analyst. Given the match and decimal odds, output a JSON with fields: prediction (home|draw|away), confidence (0-100), reasoning (short).
 Match: ${match.homeTeamName} vs ${match.awayTeamName}
 Odds: home=${match.homeWinOdds ?? "N/A"}, draw=${match.drawOdds ?? "N/A"}, away=${match.awayWinOdds ?? "N/A"}
+ Also include 'probs' with keys home, draw, away as integers 0-100 that sum to ~100.
 Return only JSON.`;
 
   try {
@@ -330,36 +483,325 @@ Return only JSON.`;
     const prediction = (json.prediction || "home").toLowerCase();
     const confidence = Math.max(0, Math.min(100, Number(json.confidence || 70)));
     const reasoning = String(json.reasoning || "");
+    let probs: { home: number; draw: number; away: number } | undefined;
+    if (json.probs && typeof json.probs === "object") {
+      const h = Math.max(0, Math.min(100, Number(json.probs.home ?? 0)));
+      const d = Math.max(0, Math.min(100, Number(json.probs.draw ?? 0)));
+      const a = Math.max(0, Math.min(100, Number(json.probs.away ?? 0)));
+      const sum = h + d + a;
+      if (sum > 0) {
+        // normalize to sum to 100
+        probs = {
+          home: Math.round((h / sum) * 100),
+          draw: Math.round((d / sum) * 100),
+          away: Math.round((a / sum) * 100),
+        };
+      }
+    }
     db.prepare(
       `INSERT INTO predictions (id, matchId, prediction, confidence, reasoning)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(matchId) DO UPDATE SET prediction=excluded.prediction, confidence=excluded.confidence, reasoning=excluded.reasoning`
     ).run(`pred_${match.id}`, match.id, prediction, confidence, reasoning);
+    if (!probs) {
+      // fallback distribution centered on top pick confidence
+      const base = { home: 33, draw: 33, away: 34 };
+      if (prediction === "home") base.home = confidence;
+      else if (prediction === "draw") base.draw = confidence;
+      else base.away = confidence;
+      const rem = 100 - (prediction === "home" ? base.home : prediction === "draw" ? base.draw : base.away);
+      const others = ["home", "draw", "away"].filter((k) => k !== prediction) as Array<"home" | "draw" | "away">;
+      base[others[0]] = Math.round(rem * 0.5);
+      base[others[1]] = rem - base[others[0]];
+      probs = base as any;
+    }
+    // Blend with priors if available
+    const blended = priors ? blendProbs(probs!, priors, 0.7) : probs!;
+    return { probs: blended };
   } catch (e) {
-    // ignore failures for now
+    // Fallback to odds-based heuristic if model fails
+    const outcomes: Array<{ key: "home" | "draw" | "away"; odds?: number; name: string }> = [
+      { key: "home", odds: match.homeWinOdds, name: match.homeTeamName },
+      { key: "draw", odds: match.drawOdds, name: "Draw" },
+      { key: "away", odds: match.awayWinOdds, name: match.awayTeamName },
+    ];
+    const available = outcomes.filter((o) => typeof o.odds === "number" && o.odds! > 0);
+    if (available.length > 0) {
+      const implied = available.map((o) => ({ ...o, p: 1 / (o.odds as number) }));
+      const sum = implied.reduce((s, o) => s + o.p, 0);
+      const withConf = implied.map((o) => ({ ...o, conf: Math.round((o.p / sum) * 100) }));
+      const best = withConf.sort((a, b) => b.conf - a.conf)[0];
+      const reasoning = `Odds-based fallback: highest implied probability from odds.`;
+      db.prepare(
+        `INSERT INTO predictions (id, matchId, prediction, confidence, reasoning)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(matchId) DO UPDATE SET prediction=excluded.prediction, confidence=excluded.confidence, reasoning=excluded.reasoning`
+      ).run(`pred_${match.id}`, match.id, best.key, best.conf, reasoning);
+      let probs = {
+        home: withConf.find((x) => x.key === "home")?.conf ?? 0,
+        draw: withConf.find((x) => x.key === "draw")?.conf ?? 0,
+        away: withConf.find((x) => x.key === "away")?.conf ?? 0,
+      };
+      if (priors) {
+        probs = blendProbs(probs, priors, 0.7);
+      }
+      return { probs };
+    }
+    return {};
   }
 }
 
+function blendProbs(
+  model: { home: number; draw: number; away: number },
+  priors: { home: number; draw: number; away: number },
+  modelWeight: number,
+) {
+  const priorWeight = 1 - modelWeight;
+  const h = model.home * modelWeight + priors.home * priorWeight;
+  const d = model.draw * modelWeight + priors.draw * priorWeight;
+  const a = model.away * modelWeight + priors.away * priorWeight;
+  const sum = h + d + a || 1;
+  return { home: Math.round((h / sum) * 100), draw: Math.round((d / sum) * 100), away: Math.round((a / sum) * 100) };
+}
+
+async function getHistoricalPriors(homeTeamName: string, awayTeamName: string): Promise<{ home: number; draw: number; away: number } | null> {
+  const dbm = await getMongoDb();
+  if (!dbm) return null;
+  const coll = dbm.collection("match_history");
+  // Last 20 matches for each team
+  const lastN = 20;
+  const homeRecent = await coll
+    .find({ $or: [{ homeTeamName }, { awayTeamName: homeTeamName }] })
+    .sort({ date: -1 })
+    .limit(lastN)
+    .toArray();
+  const awayRecent = await coll
+    .find({ $or: [{ homeTeamName: awayTeamName }, { awayTeamName: awayTeamName }] })
+    .sort({ date: -1 })
+    .limit(lastN)
+    .toArray();
+  // Last 10 head-to-head
+  const h2h = await coll
+    .find({
+      $or: [
+        { homeTeamName, awayTeamName },
+        { homeTeamName: awayTeamName, awayTeamName: homeTeamName },
+      ],
+    })
+    .sort({ date: -1 })
+    .limit(10)
+    .toArray();
+
+  const pct = (wins: number, draws: number, losses: number) => {
+    const total = wins + draws + losses;
+    if (!total) return { win: 0, draw: 0, loss: 0 };
+    return {
+      win: wins / total,
+      draw: draws / total,
+      loss: losses / total,
+    };
+  };
+
+  const summarize = (games: any[], team: string) => {
+    let wins = 0,
+      draws = 0,
+      losses = 0;
+    for (const g of games) {
+      const hg = Number(g.homeGoals ?? 0);
+      const ag = Number(g.awayGoals ?? 0);
+      const isHome = g.homeTeamName === team;
+      if (hg === ag) draws++;
+      else if ((isHome && hg > ag) || (!isHome && ag > hg)) wins++;
+      else losses++;
+    }
+    return pct(wins, draws, losses);
+  };
+
+  const homeForm = summarize(homeRecent, homeTeamName);
+  const awayForm = summarize(awayRecent, awayTeamName);
+
+  let h2hHome = 0,
+    h2hDraw = 0,
+    h2hAway = 0;
+  for (const g of h2h) {
+    const hg = Number(g.homeGoals ?? 0);
+    const ag = Number(g.awayGoals ?? 0);
+    if (hg === ag) h2hDraw++;
+    else if (g.homeTeamName === homeTeamName ? hg > ag : ag > hg) h2hHome++;
+    else h2hAway++;
+  }
+  const h2hTotal = h2hHome + h2hDraw + h2hAway || 1;
+
+  // Construct priors (0..100)
+  const homePrior =
+    100 *
+    (0.5 * homeForm.win +
+      0.3 * (1 - awayForm.win) +
+      0.2 * (h2hHome / h2hTotal));
+  const drawPrior =
+    100 *
+    (0.6 * ((homeForm.draw + awayForm.draw) / 2) + 0.4 * (h2hDraw / h2hTotal));
+  const awayPrior =
+    100 *
+    (0.5 * awayForm.win +
+      0.3 * (1 - homeForm.win) +
+      0.2 * (h2hAway / h2hTotal));
+  const sum = homePrior + drawPrior + awayPrior || 1;
+  return {
+    home: Math.round((homePrior / sum) * 100),
+    draw: Math.round((drawPrior / sum) * 100),
+    away: Math.round((awayPrior / sum) * 100),
+  };
+}
+
+// Ingest historical results into MongoDB
+app.post("/api/history/ingest", requireUser, async (req, res) => {
+  try {
+    const dbm = await getMongoDb();
+    if (!dbm) return res.status(400).json({ error: "MongoDB not configured" });
+    const coll = dbm.collection("match_history");
+    const items = Array.isArray(req.body) ? req.body : [req.body];
+    if (!items.length) return res.status(400).json({ error: "No items provided" });
+    for (const it of items) {
+      const key = `${it.date}-${it.homeTeamName}-${it.awayTeamName}`;
+      await coll.updateOne(
+        { _key: key },
+        {
+          $set: {
+            _key: key,
+            date: it.date,
+            homeTeamName: it.homeTeamName,
+            awayTeamName: it.awayTeamName,
+            homeGoals: it.homeGoals,
+            awayGoals: it.awayGoals,
+            competition: it.competition ?? null,
+          },
+        },
+        { upsert: true },
+      );
+    }
+    res.json({ ok: true, inserted: items.length });
+  } catch (e) {
+    res.status(500).json({ error: "Failed to ingest history" });
+  }
+});
+
 // Stub odds fetcher: generate upcoming matches for tomorrow if none
 function ensureSampleMatches() {
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  tomorrow.setHours(15, 0, 0, 0);
+  // If we have Odds API configured, skip seeding placeholders
+  if (ODDS_API_KEY) return;
+  // Seed a few realistic fixtures for today if none exist today
+  const now = new Date();
+  const startOfDay = new Date(now);
+  startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(now);
+  endOfDay.setHours(23, 59, 59, 999);
   const existing = db.prepare("SELECT COUNT(*) as c FROM matches WHERE matchDate BETWEEN ? AND ?").get(
-    new Date().setHours(0, 0, 0, 0),
-    new Date().setHours(23, 59, 59, 999)
+    startOfDay.getTime(),
+    endOfDay.getTime()
   ) as { c: number };
   if (existing.c > 0) return;
 
-  const leagues = db.prepare("SELECT id FROM leagues").all() as { id: string }[];
+  const leagueIds = db.prepare("SELECT id FROM leagues").all() as { id: string }[];
+  const leagueIdMap: Record<string, string> = {
+    epl: "epl",
+    laliga: "laliga",
+    bundesliga: "bundesliga",
+    seriea: "seriea",
+  };
+  // Choose available leagues in DB
+  const hasLeague = (id: string) => leagueIds.some((l) => l.id === id);
+
+  const fixtures: Array<{ leagueId: string; home: string; away: string; offsetHours: number; odds: [number, number, number] }> = [];
+  if (hasLeague("epl")) {
+    fixtures.push(
+      { leagueId: leagueIdMap.epl, home: "Arsenal", away: "Chelsea", offsetHours: 3, odds: [1.95, 3.4, 4.1] },
+      { leagueId: leagueIdMap.epl, home: "Liverpool", away: "Tottenham", offsetHours: 5, odds: [1.85, 3.6, 4.3] },
+    );
+  }
+  if (hasLeague("laliga")) {
+    fixtures.push({ leagueId: leagueIdMap.laliga, home: "Real Madrid", away: "Sevilla", offsetHours: 7, odds: [1.6, 3.8, 5.2] });
+  }
+  if (hasLeague("bundesliga")) {
+    fixtures.push({ leagueId: leagueIdMap.bundesliga, home: "Bayern Munich", away: "Leipzig", offsetHours: 9, odds: [1.7, 4.0, 4.8] });
+  }
+  if (hasLeague("seriea")) {
+    fixtures.push({ leagueId: leagueIdMap.seriea, home: "Inter", away: "Juventus", offsetHours: 11, odds: [2.2, 3.2, 3.3] });
+  }
+  if (fixtures.length === 0 && leagueIds.length) {
+    // Fallback if custom leagues table changed
+    fixtures.push({ leagueId: leagueIds[0].id, home: "Team A", away: "Team B", offsetHours: 3, odds: [2.0, 3.3, 3.8] });
+  }
+
   const insert = db.prepare(`
     INSERT INTO matches (id, leagueId, matchDate, homeTeamName, awayTeamName, homeWinOdds, drawOdds, awayWinOdds)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  const id1 = `m_${Date.now()}`;
-  insert.run(id1, leagues[0].id, tomorrow.getTime(), "Team A", "Team B", 2.0, 3.3, 3.8);
-  const id2 = `m_${Date.now() + 1}`;
-  insert.run(id2, leagues[1].id, tomorrow.getTime() + 2 * 60 * 60 * 1000, "Team C", "Team D", 1.8, 3.5, 4.2);
+  fixtures.forEach((f, idx) => {
+    const kickoff = new Date(startOfDay.getTime());
+    kickoff.setHours(12 + f.offsetHours, 0, 0, 0);
+    const id = `m_${startOfDay.getTime()}_${idx}`;
+    insert.run(id, f.leagueId, kickoff.getTime(), f.home, f.away, f.odds[0], f.odds[1], f.odds[2]);
+  });
+}
+
+async function fetchAndUpsertLiveOdds({ days }: { days: number }) {
+  const endTs = Date.now() + days * 24 * 60 * 60 * 1000;
+  const leagueMap: Record<string, string> = {
+    soccer_epl: "epl",
+    soccer_spain_la_liga: "laliga",
+    soccer_germany_bundesliga: "bundesliga",
+    soccer_italy_serie_a: "seriea",
+    soccer_uefa_champs_league: "ucl",
+  };
+  for (const sport of ODDS_API_SPORTS) {
+    const leagueId = leagueMap[sport];
+    if (!leagueId) continue;
+    const url = `https://api.the-odds-api.com/v4/sports/${sport}/odds?regions=eu&markets=h2h&oddsFormat=decimal&apiKey=${encodeURIComponent(
+      ODDS_API_KEY,
+    )}`;
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) continue;
+      const events = (await resp.json()) as any[];
+      const insert = db.prepare(`
+        INSERT INTO matches (id, leagueId, matchDate, homeTeamName, awayTeamName, homeWinOdds, drawOdds, awayWinOdds)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          leagueId=excluded.leagueId,
+          matchDate=excluded.matchDate,
+          homeTeamName=excluded.homeTeamName,
+          awayTeamName=excluded.awayTeamName,
+          homeWinOdds=excluded.homeWinOdds,
+          drawOdds=excluded.drawOdds,
+          awayWinOdds=excluded.awayWinOdds
+      `);
+      for (const ev of events) {
+        const commenceMs = new Date(ev.commence_time).getTime();
+        if (commenceMs > endTs) continue;
+        const home = ev.home_team as string;
+        const away = ev.away_team as string;
+        let homeOdds: number | undefined;
+        let drawOdds: number | undefined;
+        let awayOdds: number | undefined;
+        const firstBook = (ev.bookmakers || [])[0];
+        if (firstBook?.markets?.length) {
+          const h2h = firstBook.markets.find((m: any) => m.key === "h2h");
+          if (h2h?.outcomes?.length) {
+            for (const o of h2h.outcomes) {
+              if (o.name === home) homeOdds = Number(o.price);
+              else if (o.name === away) awayOdds = Number(o.price);
+              else if (String(o.name).toLowerCase() === "draw") drawOdds = Number(o.price);
+            }
+          }
+        }
+        const id = `odds_${sport}_${ev.id}`;
+        insert.run(id, leagueId, commenceMs, home, away, homeOdds ?? null, drawOdds ?? null, awayOdds ?? null);
+      }
+    } catch {
+      // ignore network errors
+    }
+  }
 }
 
 async function runDailyJobs() {

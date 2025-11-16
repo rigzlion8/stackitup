@@ -5,7 +5,7 @@ import { getHighConfidencePredictions } from "../api";
 export function PredictionsList() {
   const [minConfidence, setMinConfidence] = useState(70);
   const [limit, setLimit] = useState(10);
-  const [predictions, setPredictions] = useState<any[]>([]);
+  const [pairs, setPairs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -13,7 +13,7 @@ export function PredictionsList() {
     let cancelled = false;
     setLoading(true);
     getHighConfidencePredictions({ minConfidence, limit })
-      .then((ps) => !cancelled && setPredictions(ps as any[]))
+      .then((ps) => !cancelled && setPairs(ps as any[]))
       .catch((e) => !cancelled && setError(e.message || "Failed to load"))
       .finally(() => !cancelled && setLoading(false));
     return () => {
@@ -72,7 +72,7 @@ export function PredictionsList() {
       </div>
 
       {/* Predictions */}
-      {predictions.length === 0 ? (
+      {pairs.length === 0 ? (
         <div className="text-center py-12">
           <div className="text-6xl mb-4">🤖</div>
           <h3 className="text-lg font-medium text-gray-900 mb-2">
@@ -84,11 +84,11 @@ export function PredictionsList() {
         </div>
       ) : (
         <div className="grid gap-4">
-          {predictions.map((prediction) => (
+          {pairs.map((p) => (
             <MatchCard
-              key={prediction.id}
-              match={(prediction as any).match}
-              prediction={prediction as any}
+              key={p.prediction.id}
+              match={p.match}
+              prediction={p.prediction}
             />
           ))}
         </div>

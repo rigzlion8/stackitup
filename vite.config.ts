@@ -13,6 +13,8 @@ export default defineConfig(({ mode }) => ({
     },
   },
   server: {
+    port: 5177,
+    strictPort: true,
     proxy: {
       "/api": "http://localhost:4040",
       "/auth": "http://localhost:4040",

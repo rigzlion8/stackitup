@@ -1,6 +1,6 @@
 import { MatchCard } from "./MatchCard";
 import { useEffect, useState } from "react";
-import { getLeagues, getUpcomingMatches } from "../api";
+import { getLeagues, getUpcomingMatches, generatePrediction } from "../api";
 
 export function MatchList() {
   const [selectedLeague, setSelectedLeague] = useState<string>("");
@@ -9,6 +9,7 @@ export function MatchList() {
   const [matches, setMatches] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [predicting, setPredicting] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -94,11 +95,7 @@ export function MatchList() {
       ) : (
         <div className="grid gap-4">
           {matches.map((match) => (
-            <MatchCard
-              key={match.id}
-              match={match}
-              prediction={match.prediction}
-            />
+            <MatchCard key={match.id} match={match} prediction={match.prediction} />
           ))}
         </div>
       )}

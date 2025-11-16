@@ -5,11 +5,11 @@ import { DailyRecommendations } from "./DailyRecommendations.tsx";
 import { useState } from "react";
 
 export function Dashboard() {
-  const [activeTab, setActiveTab] = useState<"matches" | "predictions" | "recommendations" | "settings">("recommendations");
+  const [activeTab, setActiveTab] = useState<"matches" | "predictions" | "recommendations" | "settings">("matches");
 
   const tabs = [
-    { id: "recommendations", label: "Today's Tips", icon: "🎯" },
     { id: "matches", label: "Upcoming Matches", icon: "⚽" },
+    { id: "recommendations", label: "Today's Tips", icon: "🎯" },
     { id: "predictions", label: "AI Predictions", icon: "🤖" },
     { id: "settings", label: "Settings", icon: "⚙️" },
   ];

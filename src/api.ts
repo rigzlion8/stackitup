@@ -77,12 +77,12 @@ export function getUpcomingMatches(params: { leagueId?: string; days?: number } 
   return http<Match[]>(`/api/matches/upcoming${qs ? `?${qs}` : ""}`);
 }
 
-export function getHighConfidencePredictions(params: { minConfidence?: number; limit?: number } = {}): Promise<Prediction[]> {
+export function getHighConfidencePredictions(params: { minConfidence?: number; limit?: number } = {}): Promise<Array<{ match: Match; prediction: Prediction }>> {
   const query = new URLSearchParams();
   if (params.minConfidence != null) query.set("minConfidence", String(params.minConfidence));
   if (params.limit != null) query.set("limit", String(params.limit));
   const qs = query.toString();
-  return http<Prediction[]>(`/api/predictions/high-confidence${qs ? `?${qs}` : ""}`);
+  return http<Array<{ match: Match; prediction: Prediction }>>(`/api/predictions/high-confidence${qs ? `?${qs}` : ""}`);
 }
 
 export function getTodaysRecommendations(): Promise<{
@@ -101,6 +101,13 @@ export function updateUserPreferences(prefs: UserPreferences): Promise<{ ok: tru
   return http<{ ok: true }>("/api/user/preferences", {
     method: "POST",
     body: JSON.stringify(prefs),
+  });
+}
+
+export function generatePrediction(matchId: string): Promise<{ ok: true; prediction?: Prediction; probs?: { home: number; draw: number; away: number } }> {
+  return http<{ ok: true; prediction?: Prediction; probs?: { home: number; draw: number; away: number } }>("/api/predictions/generate", {
+    method: "POST",
+    body: JSON.stringify({ matchId }),
   });
 }
 
