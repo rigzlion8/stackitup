@@ -10,7 +10,8 @@ import cron from "node-cron";
 import { MongoClient } from "mongodb";
 
 const app = express();
-const PORT = Number(process.env.PORT) || 4040;
+const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || "0.0.0.0";
 const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:5177";
 const CALLBACK_URL = (() => {
   try {
@@ -894,8 +895,8 @@ setTimeout(() => {
   runDailyJobs().catch(() => {});
 }, 1500);
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
 });
 
 async function sendDailyEmails() {
