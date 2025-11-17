@@ -6,6 +6,8 @@ export function DailyRecommendations() {
   const [recommendations, setRecommendations] = useState<null | Awaited<ReturnType<typeof getTodaysRecommendations>>>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
 
   useEffect(() => {
     getTodaysRecommendations()
@@ -47,6 +49,9 @@ export function DailyRecommendations() {
   const safeMatches = recommendations.matches.filter(m => m.recommendationType === "safe");
   const valueMatches = recommendations.matches.filter(m => m.recommendationType === "value");
   const riskyMatches = recommendations.matches.filter(m => m.recommendationType === "risky");
+  const all = [...safeMatches, ...valueMatches, ...riskyMatches];
+  const total = all.length;
+  const slice = all.slice((page - 1) * pageSize, page * pageSize);
 
   return (
     <div className="space-y-8">
@@ -70,65 +75,60 @@ export function DailyRecommendations() {
         </div>
       </div>
 
-      {/* Safe Bets */}
-      {safeMatches.length > 0 && (
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-            <span className="mr-2">🛡️</span>
-            Safe Bets (High Confidence)
-          </h3>
-          <div className="grid gap-4">
-            {safeMatches.map((rec) => (
+      {/* Paged Recommendations */}
+      <div className="grid gap-4">
+        {slice.map((rec, idx) => {
+          const prev = slice[idx - 1];
+          const showHeader =
+            !prev || prev.recommendationType !== rec.recommendationType;
+          const header =
+            rec.recommendationType === "safe"
+              ? { icon: "🛡️", text: "Safe Bets (High Confidence)" }
+              : rec.recommendationType === "value"
+              ? { icon: "💰", text: "Value Bets (Good Odds)" }
+              : { icon: "🎲", text: "Risky Bets (Higher Reward)" };
+          return (
+            <div key={rec.match.id}>
+              {showHeader && (
+                <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
+                  <span className="mr-2">{header.icon}</span>
+                  {header.text}
+                </h3>
+              )}
               <MatchCard
-                key={rec.match.id}
                 match={rec.match}
                 prediction={rec.prediction}
                 recommendationType={rec.recommendationType}
               />
-            ))}
-          </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex items-center justify-between pt-4">
+        <div className="text-sm text-gray-600">
+          Showing{" "}
+          {Math.min((page - 1) * pageSize + 1, total)}-
+          {Math.min(page * pageSize, total)} of {total}
         </div>
-      )}
-
-      {/* Value Bets */}
-      {valueMatches.length > 0 && (
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-            <span className="mr-2">💰</span>
-            Value Bets (Good Odds)
-          </h3>
-          <div className="grid gap-4">
-            {valueMatches.map((rec) => (
-              <MatchCard
-                key={rec.match.id}
-                match={rec.match}
-                prediction={rec.prediction}
-                recommendationType={rec.recommendationType}
-              />
-            ))}
-          </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page === 1}
+            className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white hover:bg-gray-50"
+          >
+            Prev
+          </button>
+          <button
+            onClick={() =>
+              setPage((p) => (p * pageSize < total ? p + 1 : p))
+            }
+            disabled={page * pageSize >= total}
+            className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white hover:bg-gray-50"
+          >
+            Next
+          </button>
         </div>
-      )}
-
-      {/* Risky Bets */}
-      {riskyMatches.length > 0 && (
-        <div>
-          <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-            <span className="mr-2">🎲</span>
-            Risky Bets (Higher Reward)
-          </h3>
-          <div className="grid gap-4">
-            {riskyMatches.map((rec) => (
-              <MatchCard
-                key={rec.match.id}
-                match={rec.match}
-                prediction={rec.prediction}
-                recommendationType={rec.recommendationType}
-              />
-            ))}
-          </div>
-        </div>
-      )}
+      </div>
     </div>
   );
 }

@@ -111,4 +111,11 @@ export function generatePrediction(matchId: string): Promise<{ ok: true; predict
   });
 }
 
+export function generateBulkPredictions(matchIds: string[]): Promise<{ ok: true; results: Record<string, { prediction?: Prediction; probs?: { home: number; draw: number; away: number } }> }> {
+  return http<{ ok: true; results: Record<string, { prediction?: Prediction; probs?: { home: number; draw: number; away: number } }> }>("/api/predictions/generate-bulk", {
+    method: "POST",
+    body: JSON.stringify({ matchIds }),
+  });
+}
+
 

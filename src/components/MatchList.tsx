@@ -1,6 +1,6 @@
 import { MatchCard } from "./MatchCard";
 import { useEffect, useState } from "react";
-import { getLeagues, getUpcomingMatches, generatePrediction } from "../api";
+import { getLeagues, getUpcomingMatches, generateBulkPredictions } from "../api";
 
 export function MatchList() {
   const [selectedLeague, setSelectedLeague] = useState<string>("");
@@ -10,6 +10,9 @@ export function MatchList() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [predicting, setPredicting] = useState<Record<string, boolean>>({});
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
 
   useEffect(() => {
     let cancelled = false;
@@ -29,6 +32,10 @@ export function MatchList() {
       cancelled = true;
     };
   }, [selectedLeague, daysAhead]);
+  
+  useEffect(() => {
+    setPage(1);
+  }, [selectedLeague, daysAhead, matches.length]);
 
   if (loading) {
     return (
@@ -93,11 +100,69 @@ export function MatchList() {
           </p>
         </div>
       ) : (
-        <div className="grid gap-4">
-          {matches.map((match) => (
-            <MatchCard key={match.id} match={match} prediction={match.prediction} />
-          ))}
-        </div>
+        <>
+          <div className="flex justify-end">
+            <button
+              onClick={async () => {
+                setBulkLoading(true);
+                try {
+                  const ids = matches.map((m) => m.id);
+                  const res = await generateBulkPredictions(ids);
+                  if (res?.results) {
+                    setMatches((ms) =>
+                      ms.map((m) => {
+                        const r = (res.results as any)[m.id];
+                        if (r?.prediction) {
+                          return { ...m, prediction: r.prediction };
+                        }
+                        return m;
+                      }),
+                    );
+                  }
+                } finally {
+                  setBulkLoading(false);
+                }
+              }}
+              disabled={bulkLoading}
+              className="px-4 py-2 rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {bulkLoading ? "Predicting all..." : "Predict All"}
+            </button>
+          </div>
+          <div className="grid gap-4">
+            {matches
+              .slice((page - 1) * pageSize, page * pageSize)
+              .map((match) => (
+              <MatchCard key={match.id} match={match} prediction={match.prediction} />
+            ))}
+          </div>
+          {/* Pagination */}
+          <div className="flex items-center justify-between pt-4">
+            <div className="text-sm text-gray-600">
+              Showing{" "}
+              {Math.min((page - 1) * pageSize + 1, matches.length)}-
+              {Math.min(page * pageSize, matches.length)} of {matches.length}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white hover:bg-gray-50"
+              >
+                Prev
+              </button>
+              <button
+                onClick={() =>
+                  setPage((p) => (p * pageSize < matches.length ? p + 1 : p))
+                }
+                disabled={page * pageSize >= matches.length}
+                className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white hover:bg-gray-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

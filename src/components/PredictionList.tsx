@@ -8,6 +8,8 @@ export function PredictionsList() {
   const [pairs, setPairs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const pageSize = 10;
 
   useEffect(() => {
     let cancelled = false;
@@ -20,6 +22,10 @@ export function PredictionsList() {
       cancelled = true;
     };
   }, [minConfidence, limit]);
+  
+  useEffect(() => {
+    setPage(1);
+  }, [minConfidence, limit, pairs.length]);
 
   if (loading) {
     return (
@@ -83,15 +89,44 @@ export function PredictionsList() {
           </p>
         </div>
       ) : (
-        <div className="grid gap-4">
-          {pairs.map((p) => (
-            <MatchCard
-              key={p.prediction.id}
-              match={p.match}
-              prediction={p.prediction}
-            />
-          ))}
-        </div>
+        <>
+          <div className="grid gap-4">
+            {pairs
+              .slice((page - 1) * pageSize, page * pageSize)
+              .map((p) => (
+                <MatchCard
+                  key={p.prediction.id}
+                  match={p.match}
+                  prediction={p.prediction}
+                />
+              ))}
+          </div>
+          <div className="flex items-center justify-between pt-4">
+            <div className="text-sm text-gray-600">
+              Showing{" "}
+              {Math.min((page - 1) * pageSize + 1, pairs.length)}-
+              {Math.min(page * pageSize, pairs.length)} of {pairs.length}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page === 1}
+                className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white hover:bg-gray-50"
+              >
+                Prev
+              </button>
+              <button
+                onClick={() =>
+                  setPage((p) => (p * pageSize < pairs.length ? p + 1 : p))
+                }
+                disabled={page * pageSize >= pairs.length}
+                className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white hover:bg-gray-50"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        </>
       )}
     </div>
   );

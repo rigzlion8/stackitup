@@ -356,6 +356,41 @@ app.post("/api/predictions/generate", requireUser, async (req, res) => {
   }
 });
 
+app.post("/api/predictions/generate-bulk", requireUser, async (req, res) => {
+  const { matchIds } = req.body || {};
+  if (!Array.isArray(matchIds) || matchIds.length === 0) {
+    return res.status(400).json({ error: "matchIds array required" });
+  }
+  const results: Record<string, { prediction?: any; probs?: any; error?: string }> = {};
+  for (const id of matchIds.slice(0, 25)) {
+    try {
+      const m = db
+        .prepare("SELECT id, homeTeamName, awayTeamName, homeWinOdds, drawOdds, awayWinOdds FROM matches WHERE id = ?")
+        .get(id);
+      if (!m) {
+        results[id] = { error: "Match not found" };
+        continue;
+      }
+      const isPlaceholder = (name?: string) => {
+        if (!name) return true;
+        const n = String(name).toLowerCase();
+        return /^team\s+/.test(n) || n === "home team" || n === "away team";
+      };
+      if (isPlaceholder(m.homeTeamName) || isPlaceholder(m.awayTeamName)) {
+        results[id] = { error: "Placeholder teams" };
+        continue;
+      }
+      const { probs } = await generatePredictionForMatch(m);
+      const prediction = db
+        .prepare("SELECT id, matchId, prediction, confidence, reasoning FROM predictions WHERE matchId = ?")
+        .get(id);
+      results[id] = { prediction, probs };
+    } catch {
+      results[id] = { error: "Failed" };
+    }
+  }
+  res.json({ ok: true, results });
+});
 app.get("/api/recommendations/today", (req, res) => {
   const start = new Date();
   start.setHours(0, 0, 0, 0);
@@ -843,10 +878,16 @@ async function runDailyJobs() {
   }
 }
 
-// Schedule daily at 07:00 UTC
-cron.schedule("0 7 * * *", () => {
-  runDailyJobs().catch(() => {});
-});
+// Schedule daily email at 09:00 in configured timezone (default UTC)
+const CRON_TZ = process.env.CRON_TZ || "UTC";
+cron.schedule(
+  "0 9 * * *",
+  () => {
+    runDailyJobs().catch(() => {});
+    sendDailyEmails().catch(() => {});
+  },
+  { timezone: CRON_TZ },
+);
 
 // On startup, also generate once after short delay
 setTimeout(() => {
@@ -857,4 +898,52 @@ app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
 
+async function sendDailyEmails() {
+  if (!RESEND_API_KEY) return;
+  try {
+    const Resend = (await import("resend")).Resend;
+    const resend = new Resend(RESEND_API_KEY);
+    // Select today's high-confidence predictions (>= 85)
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+    const rows = db
+      .prepare(
+        `SELECT m.homeTeamName, m.awayTeamName, m.matchDate, l.name as leagueName, p.prediction, p.confidence
+         FROM matches m
+         JOIN leagues l ON l.id = m.leagueId
+         JOIN predictions p ON p.matchId = m.id
+         WHERE m.matchDate BETWEEN ? AND ? AND p.confidence >= ?
+         ORDER BY p.confidence DESC, m.matchDate ASC`,
+      )
+      .all(start.getTime(), end.getTime(), 85) as any[];
+
+    if (!rows.length) return;
+    const lines = rows.map(
+      (r: any) =>
+        `${r.leagueName}: ${r.homeTeamName} vs ${r.awayTeamName} • ${new Date(r.matchDate).toLocaleString()} • ${String(
+          r.prediction,
+        ).toUpperCase()} (${r.confidence}%)`,
+    );
+    const users = db
+      .prepare(
+        `SELECT u.email FROM users u
+         JOIN user_preferences p ON p.userId = u.id
+         WHERE p.emailNotifications = 1`,
+      )
+      .all() as { email: string }[];
+    await Promise.all(
+      users.map((u) =>
+        resend.emails.send({
+          from: "Tips <onboarding@resend.dev>",
+          to: u.email,
+          subject: "Today’s High-Confidence Picks",
+          text: lines.join("\n"),
+        }),
+      ),
+    );
+  } catch {
+    // ignore
+  }
+}
 
