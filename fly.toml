@@ -6,6 +6,7 @@ primary_region = "iad"
 
 [env]
   PORT = "3000"
+  DATA_DIR = "/data"
 
 [[services]]
   internal_port = 3000
@@ -25,5 +26,9 @@ primary_region = "iad"
     timeout = "2s"
     grace_period = "30s"
     restart_limit = 0
+
+[mounts]
+  source = "data"
+  destination = "/data"
 
 

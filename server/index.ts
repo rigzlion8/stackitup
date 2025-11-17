@@ -34,7 +34,8 @@ const ODDS_API_SPORTS = (process.env.ODDS_API_SPORTS || "soccer_epl,soccer_spain
   .filter(Boolean);
 
 // Database setup (SQLite)
-const db = new Database("data.sqlite");
+const DATA_DIR = process.env.DATA_DIR || ".";
+const db = new Database(path.join(DATA_DIR, "data.sqlite"));
 db.pragma("journal_mode = WAL");
 
 db.exec(`

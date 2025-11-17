@@ -1,7 +1,12 @@
-FROM node:20-alpine
+FROM node:20-bullseye-slim
 WORKDIR /app
 
-# Install dependencies
+# System deps for native modules (e.g., better-sqlite3)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 make g++ ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install dependencies with full devDeps (tsx) available at runtime
 COPY package*.json ./
 RUN npm ci
 
