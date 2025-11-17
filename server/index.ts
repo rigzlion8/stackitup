@@ -1,5 +1,7 @@
 import "dotenv/config";
 import express from "express";
+import * as path from "path";
+import { fileURLToPath } from "url";
 import session from "express-session";
 import cors from "cors";
 import passport from "passport";
@@ -894,6 +896,20 @@ cron.schedule(
 setTimeout(() => {
   runDailyJobs().catch(() => {});
 }, 1500);
+
+// Serve built frontend (for production deploy)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const distPath = path.resolve(__dirname, "../dist");
+app.use(express.static(distPath));
+app.get("*", (req, res, next) => {
+  if (req.path.startsWith("/api") || req.path.startsWith("/auth")) return next();
+  try {
+    return res.sendFile(path.join(distPath, "index.html"));
+  } catch {
+    return next();
+  }
+});
 
 app.listen(PORT, HOST, () => {
   console.log(`Server running on http://${HOST}:${PORT}`);

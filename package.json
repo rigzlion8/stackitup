@@ -4,12 +4,11 @@
     "version": "0.0.0",
     "type": "module",
     "scripts": {
-        "start": "node dist/server/index.js",
+        "start": "npm run start:server",
         "start:client": "vite",
         "start:server": "tsx server/index.ts",
         "dev": "run-p start:*",
-        "build": "vite build && npm run build:server",
-        "build:server": "tsc -p tsconfig.server.json",
+        "build": "vite build",
         "lint": "tsc -p . && vite build"
     },
     "dependencies": {
