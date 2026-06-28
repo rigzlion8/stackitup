@@ -37,17 +37,20 @@ export function HeadToHead() {
     const leftPct = max > 0 ? (left / max) * 100 : 50;
     const rightPct = max > 0 ? (right / max) * 100 : 50;
     return (
-      <div className="flex items-center gap-3 mb-2">
-        <span className="text-xs font-semibold text-gray-900 dark:text-gray-100 w-12 text-right">{left}</span>
-        <div className="flex-1 flex gap-0.5">
-          <div className="flex-1 flex justify-end">
-            <div className="h-2 rounded-l bg-blue-500 transition-all" style={{ width: `${leftPct}%` }} />
+      <div className="mb-2">
+        <div className="text-[10px] font-medium text-gray-500 mb-1">{label}</div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs font-semibold text-gray-900 dark:text-gray-100 w-12 text-right">{left}</span>
+          <div className="flex-1 flex gap-0.5">
+            <div className="flex-1 flex justify-end">
+              <div className="h-2 rounded-l bg-blue-500 transition-all" style={{ width: `${leftPct}%` }} />
+            </div>
+            <div className="flex-1">
+              <div className="h-2 rounded-r bg-red-500 transition-all" style={{ width: `${rightPct}%` }} />
+            </div>
           </div>
-          <div className="flex-1">
-            <div className="h-2 rounded-r bg-red-500 transition-all" style={{ width: `${rightPct}%` }} />
-          </div>
+          <span className="text-xs font-semibold text-gray-900 dark:text-gray-100 w-12 text-left">{right}</span>
         </div>
-        <span className="text-xs font-semibold text-gray-900 dark:text-gray-100 w-12 text-left">{right}</span>
       </div>
     );
   };
@@ -129,6 +132,13 @@ export function HeadToHead() {
 
       {comparison && (
         <div className="space-y-6">
+          {/* Team name legend */}
+          <div className="flex items-center justify-between px-2">
+            <span className="text-sm font-semibold text-blue-600">{comparison.team1.name}</span>
+            <span className="text-xs text-gray-400">vs</span>
+            <span className="text-sm font-semibold text-red-500">{comparison.team2.name}</span>
+          </div>
+
           {/* Squad Stats */}
           <div className="bg-gray-50 dark:bg-gray-800/50 rounded-xl p-4">
             <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Squad Comparison</h4>
@@ -136,6 +146,7 @@ export function HeadToHead() {
             <StatBar left={comparison.team1.squad.goals} right={comparison.team2.squad.goals} label="Goals" max={Math.max(comparison.team1.squad.goals, comparison.team2.squad.goals)} />
             <StatBar left={comparison.team1.squad.assists} right={comparison.team2.squad.assists} label="Assists" max={Math.max(comparison.team1.squad.assists, comparison.team2.squad.assists)} />
             <StatBar left={comparison.team1.squad.clean_sheets} right={comparison.team2.squad.clean_sheets} label="Clean Sheets" max={Math.max(comparison.team1.squad.clean_sheets, comparison.team2.squad.clean_sheets)} />
+            <StatBar left={comparison.team1.squad.avgApps} right={comparison.team2.squad.avgApps} label="Avg Appearances" max={Math.max(comparison.team1.squad.avgApps, comparison.team2.squad.avgApps)} />
           </div>
 
           {/* Position Breakdown */}
@@ -155,15 +166,39 @@ export function HeadToHead() {
               <div className="space-y-2">
                 {comparison.h2hMatches.map((m) => (
                   <div key={m.id} className="flex items-center justify-between p-2 rounded-lg bg-white dark:bg-gray-900 text-sm">
-                    <span className="text-gray-900 dark:text-gray-100 font-medium">{m.homeTeamName}</span>
-                    <span className="text-xs text-gray-400">vs</span>
-                    <span className="text-gray-900 dark:text-gray-100 font-medium">{m.awayTeamName}</span>
-                    <span className="text-[11px] text-gray-500">{new Date(m.matchDate).toLocaleDateString()}</span>
+                    <span className="text-gray-900 dark:text-gray-100 font-medium w-32 truncate text-right">{m.homeTeamName}</span>
+                    <span className="text-xs font-bold text-gray-600 dark:text-gray-300 mx-2 min-w-[3rem] text-center">
+                      {m.homeScore != null && m.awayScore != null ? `${m.homeScore} - ${m.awayScore}` : "vs"}
+                    </span>
+                    <span className="text-gray-900 dark:text-gray-100 font-medium w-32 truncate">{m.awayTeamName}</span>
+                    <span className="text-[11px] text-gray-500 ml-3">{new Date(m.matchDate).toLocaleDateString()}</span>
                   </div>
                 ))}
               </div>
             </div>
           )}
+
+          {/* Head to Head Record */}
+          <div className="bg-gray-50 dark:bg-gray-800/50 rounded-xl p-4">
+            <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Head to Head Record</h4>
+            <div className="grid grid-cols-3 gap-3 text-center">
+              <div className="bg-blue-50 dark:bg-blue-950/30 rounded-lg p-3">
+                <div className="text-lg font-bold text-blue-600">{comparison.h2hStats.team1Wins}</div>
+                <div className="text-[10px] text-gray-500">{comparison.team1.name} Wins</div>
+              </div>
+              <div className="bg-gray-100 dark:bg-gray-800 rounded-lg p-3">
+                <div className="text-lg font-bold text-gray-500">{comparison.h2hStats.draws}</div>
+                <div className="text-[10px] text-gray-500">Draws</div>
+              </div>
+              <div className="bg-red-50 dark:bg-red-950/30 rounded-lg p-3">
+                <div className="text-lg font-bold text-red-500">{comparison.h2hStats.team2Wins}</div>
+                <div className="text-[10px] text-gray-500">{comparison.team2.name} Wins</div>
+              </div>
+            </div>
+            {comparison.h2hMatches.some(m => m.homeScore == null) && (
+              <p className="text-[10px] text-gray-400 mt-2 text-center">Scores update after matches are played</p>
+            )}
+          </div>
         </div>
       )}
     </div>

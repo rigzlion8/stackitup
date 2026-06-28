@@ -229,7 +229,9 @@ export interface HeadToHeadComparison {
   h2hMatches: Array<{
     id: string; leagueName: string; homeTeamName: string; awayTeamName: string;
     matchDate: number; homeWinOdds: number; drawOdds: number; awayWinOdds: number;
+    homeScore: number | null; awayScore: number | null;
   }>;
+  h2hStats: { team1Wins: number; team2Wins: number; draws: number };
 }
 
 export function getTeams(params: { search?: string; league?: string } = {}): Promise<TeamInfo[]> {

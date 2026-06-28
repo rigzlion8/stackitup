@@ -7,49 +7,62 @@ function parseFormation(f: string): number[] {
   return f.split("-").map(Number).filter((n) => !isNaN(n) && n > 0);
 }
 
+function byFoot(a: PlayerInfo | null, b: PlayerInfo | null): number {
+  const fa = a?.preferred_foot ?? "";
+  const fb = b?.preferred_foot ?? "";
+  if (fa === "L" && fb !== "L") return -1;
+  if (fa !== "L" && fb === "L") return 1;
+  if (fa === "R" && fb !== "R") return 1;
+  if (fa !== "R" && fb === "R") return -1;
+  return 0;
+}
+
 function assignPositions(formation: string, players: PlayerInfo[], startingIds: Set<string>): (PlayerInfo | null)[][] {
-  const rows = parseFormation(formation); // e.g. 4-3-3 => [4,3,3]
+  const rows = parseFormation(formation);
   const sortByApps = (arr: PlayerInfo[]) => [...arr].sort((a, b) => (b.stats.appearances || 0) - (a.stats.appearances || 0));
-  
-  const gk = sortByApps(players.filter(p => p.position === "Goalkeeper" && startingIds.has(p.id)));
-  const def = sortByApps(players.filter(p => p.position === "Defender" && startingIds.has(p.id)));
-  const mid = sortByApps(players.filter(p => p.position === "Midfielder" && startingIds.has(p.id)));
-  const fwd = sortByApps(players.filter(p => p.position === "Forward" && startingIds.has(p.id)));
+
+  const gkPool = sortByApps(players.filter(p => p.position === "Goalkeeper" && startingIds.has(p.id)));
+  const defPool = sortByApps(players.filter(p => p.position === "Defender" && startingIds.has(p.id)));
+  const midPool = sortByApps(players.filter(p => p.position === "Midfielder" && startingIds.has(p.id)));
+  const fwdPool = sortByApps(players.filter(p => p.position === "Forward" && startingIds.has(p.id)));
+  const allStarting = sortByApps(players.filter(p => startingIds.has(p.id)));
+
+  const used = new Set<string>();
+
+  const takeFrom = (pool: PlayerInfo[]): PlayerInfo | null => {
+    for (const p of pool) {
+      if (!used.has(p.id)) { used.add(p.id); return p; }
+    }
+    for (const p of allStarting) {
+      if (!used.has(p.id)) { used.add(p.id); return p; }
+    }
+    return null;
+  };
 
   const result: (PlayerInfo | null)[][] = [];
 
-  // Row 0: Goalkeeper (always the one GK slot in rows[0])
-  result.push([gk[0] || null]);
+  result.push([takeFrom(gkPool)]);
 
-  const outfieldRows = rows.slice(1); // e.g. [4, 3, 3]
+  const outfieldRows = rows;
   if (outfieldRows.length === 0) return result;
 
-  // Row 1: Defenders (first outfield row)
-  const defCount = outfieldRows[0];
   const defRow: (PlayerInfo | null)[] = [];
-  for (let i = 0; i < defCount; i++) {
-    defRow.push(def[i] || null);
-  }
+  for (let i = 0; i < outfieldRows[0]; i++) defRow.push(takeFrom(defPool));
+  defRow.sort(byFoot);
   result.push(defRow);
 
-  // Middle rows: Midfielders
   for (let i = 1; i < outfieldRows.length - 1; i++) {
-    const midCount = outfieldRows[i];
     const midRow: (PlayerInfo | null)[] = [];
-    const offset = outfieldRows.slice(1, i).reduce((a, b) => a + b, 0);
-    for (let j = 0; j < midCount; j++) {
-      midRow.push(mid[offset + j] || null);
-    }
+    for (let j = 0; j < outfieldRows[i]; j++) midRow.push(takeFrom(midPool));
+    midRow.sort(byFoot);
     result.push(midRow);
   }
 
-  // Last row: Forwards
   if (outfieldRows.length > 1) {
-    const fwdCount = outfieldRows[outfieldRows.length - 1];
     const fwdRow: (PlayerInfo | null)[] = [];
-    for (let i = 0; i < fwdCount; i++) {
-      fwdRow.push(fwd[i] || null);
-    }
+    for (let j = 0; j < outfieldRows[outfieldRows.length - 1]; j++) fwdRow.push(takeFrom(fwdPool));
+    fwdRow.sort(byFoot);
+    fwdRow.reverse();
     result.push(fwdRow);
   }
 
@@ -106,13 +119,33 @@ export function FormationPitch({ formation: initialFormation, players, onFormati
   const [formation, setFormation] = useState(initialFormation);
   const [selectedSub, setSelectedSub] = useState<string | null>(null);
   const [startingIds, setStartingIds] = useState<Set<string>>(() => {
-    // Auto-pick starting XI: top players by appearances, GK always
-    const sorted = [...players].sort((a, b) => (b.stats.appearances || 0) - (a.stats.appearances || 0));
-    const slots = parseFormation(formation).reduce((a, b) => a + b, 0);
-    const gk = sorted.find(p => p.position === "Goalkeeper");
-    const outfield = sorted.filter(p => p.position !== "Goalkeeper").slice(0, slots - 1);
-    const starting = new Set([gk, ...outfield].filter(Boolean).map(p => p!.id));
-    return starting;
+    const parsed = parseFormation(formation);
+    const slots = parsed.reduce((a, b) => a + b, 0) + 1;
+    const sortByApps = (arr: PlayerInfo[]) => [...arr].sort((a, b) => (b.stats.appearances || 0) - (a.stats.appearances || 0));
+
+    const gk = players.find(p => p.position === "Goalkeeper");
+    const defs = sortByApps(players.filter(p => p.position === "Defender"));
+    const mids = sortByApps(players.filter(p => p.position === "Midfielder"));
+    const fwds = sortByApps(players.filter(p => p.position === "Forward"));
+
+    const defNeeded = parsed[0] || 0;
+    const midNeeded = parsed.length > 2 ? parsed.slice(1, -1).reduce((a, b) => a + b, 0) : (parsed.length === 2 ? parsed[1] : 0);
+    const fwdNeeded = parsed.length > 1 ? parsed[parsed.length - 1] : 0;
+
+    const starters: PlayerInfo[] = [];
+    if (gk) starters.push(gk);
+    starters.push(...defs.slice(0, defNeeded));
+    starters.push(...mids.slice(0, midNeeded));
+    starters.push(...fwds.slice(0, fwdNeeded));
+
+    const used = new Set(starters.map(p => p.id));
+    const remaining = sortByApps(players.filter(p => !used.has(p.id) && p.position !== "Goalkeeper"));
+    for (const p of remaining) {
+      if (starters.length >= slots) break;
+      starters.push(p);
+    }
+
+    return new Set(starters.map(p => p.id));
   });
 
   const positions = useMemo(
@@ -186,19 +219,29 @@ export function FormationPitch({ formation: initialFormation, players, onFormati
             </div>
           )}
 
-          {/* Players - rendered bottom-to-top: GK at bottom, forwards at top */}
-          <div className="relative h-full flex flex-col justify-around py-4">
-            {[...positions].reverse().map((row, ri) => {
-              const reversedIdx = positions.length - 1 - ri;
-              const isGKRow = reversedIdx === 0;
-              const outfieldIdx = reversedIdx - 1;
-              const totalOutfield = positions.length - 1;
-              const isDefRow = outfieldIdx === 0;
-              const isFwdRow = outfieldIdx === totalOutfield - 1 || totalOutfield === 0;
+          {/* Players - positioned by tactical line: GK at bottom, forwards at top */}
+          <div className="relative h-full">
+            {positions.map((row, ri) => {
+              const totalRows = positions.length;
+              const outfieldIdx = ri - 1;
+              const totalOutfield = totalRows - 1;
+              const isGKRow = ri === 0;
+              const isDefRow = ri === 1;
+              const isFwdRow = ri === totalRows - 1;
               const bgColor = isGKRow ? "bg-yellow-400/90" : isDefRow ? "bg-blue-400/90" : isFwdRow ? "bg-red-400/90" : "bg-gray-300/90";
 
+              let topPercent: number;
+              if (isGKRow) topPercent = 89;
+              else if (isDefRow) topPercent = 73;
+              else if (isFwdRow) topPercent = 15;
+              else {
+                const midCount = totalOutfield - 2;
+                const midIndex = outfieldIdx - 1;
+                topPercent = 73 + (15 - 73) * (midIndex + 1) / (midCount + 1);
+              }
+
               return (
-                <div key={ri} className="flex justify-around px-2">
+                <div key={ri} className="absolute left-0 right-0 flex justify-around px-2" style={{ top: `${topPercent}%` }}>
                   {row.map((player, pi) => (
                     <PlayerDot
                       key={pi}

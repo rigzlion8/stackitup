@@ -61,6 +61,8 @@ CREATE TABLE IF NOT EXISTS matches (
   homeWinOdds REAL,
   drawOdds REAL,
   awayWinOdds REAL,
+  homeScore INTEGER,
+  awayScore INTEGER,
   FOREIGN KEY (leagueId) REFERENCES leagues(id)
 );
 CREATE TABLE IF NOT EXISTS predictions (
@@ -233,8 +235,10 @@ if (teamsCount.c === 0) {
 // Always seed additional teams/players from seed-data module
 (() => {
   const insertTeam = db.prepare("INSERT OR IGNORE INTO teams (id, name, country, league, logo_url) VALUES (?, ?, ?, ?, ?)");
-  const insertPlayer = db.prepare("INSERT OR IGNORE INTO players (id, name, team_id, country, position, number, birth_date, height, weight, fifa_rating, transfer_fee, wages, market_value, preferred_foot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-  const insertStats = db.prepare("INSERT OR IGNORE INTO player_season_stats (id, player_id, season, appearances, goals, assists, clean_sheets, yellow_cards, red_cards, minutes_played, fantasy_points, fantasy_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const insertPlayer = db.prepare("INSERT OR REPLACE INTO players (id, name, team_id, country, position, number, birth_date, height, weight, fifa_rating, transfer_fee, wages, market_value, preferred_foot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const insertStats = db.prepare("INSERT OR REPLACE INTO player_season_stats (id, player_id, season, appearances, goals, assists, clean_sheets, yellow_cards, red_cards, minutes_played, fantasy_points, fantasy_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  db.prepare("DELETE FROM player_season_stats WHERE player_id = 'p_partey'").run();
+  db.prepare("DELETE FROM players WHERE id = 'p_partey'").run();
   const season = "2024-25";
   for (const t of seedTeams) insertTeam.run(t.id, t.name, t.country, t.league, null);
   for (const p of seedPlayers) {
@@ -272,6 +276,8 @@ try { db.exec("ALTER TABLE players ADD COLUMN preferred_foot TEXT"); } catch {}
 try { db.exec("ALTER TABLE player_season_stats ADD COLUMN minutes_played INTEGER DEFAULT 0"); } catch {}
 try { db.exec("ALTER TABLE player_season_stats ADD COLUMN fantasy_points INTEGER DEFAULT 0"); } catch {}
 try { db.exec("ALTER TABLE player_season_stats ADD COLUMN fantasy_value REAL DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE matches ADD COLUMN homeScore INTEGER"); } catch {}
+try { db.exec("ALTER TABLE matches ADD COLUMN awayScore INTEGER"); } catch {}
 
 // MongoDB setup (optional, if MONGODB_URI configured)
 let mongoClient: MongoClient | null = null;
@@ -1133,6 +1139,51 @@ app.get("/api/teams", (req, res) => {
   res.json(Array.from(seen.values()).map((r:any) => ({id:r.id,name:r.name,country:r.country,league:r.league,leagueName:r.leagueName,logo_url:r.logo_url,coach:r.coach,formation:r.formation})));
 });
 
+app.get("/api/teams/compare", (req, res) => {
+  const { team1, team2 } = req.query as { team1?: string; team2?: string };
+  if (!team1 || !team2) return res.status(400).json({error:"team1 and team2 required"});
+  const t1 = db.prepare("SELECT t.*, l.name as leagueName FROM teams t JOIN leagues l ON l.id = t.league WHERE t.id = ?").get(team1) as any;
+  const t2 = db.prepare("SELECT t.*, l.name as leagueName FROM teams t JOIN leagues l ON l.id = t.league WHERE t.id = ?").get(team2) as any;
+  if (!t1 || !t2) return res.status(404).json({error:"Team not found"});
+  const squad = (tid:string) => db.prepare(
+    "SELECT COUNT(*) as total, COALESCE(SUM(s.goals),0) as goals, COALESCE(SUM(s.assists),0) as assists, COALESCE(SUM(s.clean_sheets),0) as clean_sheets, COALESCE(AVG(s.appearances),0) as avgApps FROM players p LEFT JOIN player_season_stats s ON s.player_id = p.id AND s.season = '2024-25' WHERE p.team_id = ?"
+  ).get(tid) as any;
+  const posCount = (tid:string) => {
+    const rows = db.prepare("SELECT position, COUNT(*) as cnt FROM players WHERE team_id = ? GROUP BY position").all(tid) as any[];
+    const m: Record<string,number> = {};
+    for (const r of rows) m[r.position] = r.cnt;
+    return m;
+  };
+  const h2h = db.prepare(
+    "SELECT m.*, l.name as leagueName FROM matches m JOIN leagues l ON l.id = m.leagueId WHERE (LOWER(m.homeTeamName)=LOWER(?) AND LOWER(m.awayTeamName)=LOWER(?)) OR (LOWER(m.homeTeamName)=LOWER(?) AND LOWER(m.awayTeamName)=LOWER(?)) ORDER BY m.matchDate DESC LIMIT 10"
+  ).all(t1.name,t2.name,t2.name,t1.name) as any[];
+  let t1Wins = 0, t2Wins = 0, draws = 0;
+  const h2hMapped = h2h.map((m:any) => {
+    const isHome1 = m.homeTeamName && m.homeTeamName.toLowerCase() === t1.name.toLowerCase();
+    const homeScore = m.homeScore ?? null;
+    const awayScore = m.awayScore ?? null;
+    if (homeScore != null && awayScore != null) {
+      if (homeScore > awayScore) isHome1 ? t1Wins++ : t2Wins++;
+      else if (awayScore > homeScore) isHome1 ? t2Wins++ : t1Wins++;
+      else draws++;
+    }
+    return {
+      id:m.id, leagueName:m.leagueName, homeTeamName:m.homeTeamName, awayTeamName:m.awayTeamName,
+      matchDate:m.matchDate, homeWinOdds:m.homeWinOdds, drawOdds:m.drawOdds, awayWinOdds:m.awayWinOdds,
+      homeScore, awayScore,
+    };
+  });
+  const s1 = squad(team1), s2 = squad(team2);
+  res.json({
+    team1:{id:t1.id,name:t1.name,country:t1.country,league:t1.leagueName,logo_url:t1.logo_url,
+      squad:{total:s1.total||0,goals:s1.goals||0,assists:s1.assists||0,clean_sheets:s1.clean_sheets||0,avgApps:Math.round(s1.avgApps||0)},positions:posCount(team1)},
+    team2:{id:t2.id,name:t2.name,country:t2.country,league:t2.leagueName,logo_url:t2.logo_url,
+      squad:{total:s2.total||0,goals:s2.goals||0,assists:s2.assists||0,clean_sheets:s2.clean_sheets||0,avgApps:Math.round(s2.avgApps||0)},positions:posCount(team2)},
+    h2hMatches: h2hMapped,
+    h2hStats: { team1Wins: t1Wins, team2Wins: t2Wins, draws },
+  });
+});
+
 app.get("/api/teams/:id", (req, res) => {
   const team = db.prepare("SELECT t.*, l.name as leagueName FROM teams t JOIN leagues l ON l.id = t.league WHERE t.id = ?").get(req.params.id) as any;
   if (!team) return res.status(404).json({error:"Team not found"});
@@ -1168,34 +1219,6 @@ app.get("/api/teams/:id/players", (req, res) => {
       clean_sheets:r.clean_sheets||0,yellow_cards:r.yellow_cards||0,red_cards:r.red_cards||0,
       minutes_played:r.minutes_played||0,fantasy_points:r.fantasy_points||0,fantasy_value:r.fantasy_value||0},
   })));
-});
-
-app.get("/api/teams/compare", (req, res) => {
-  const { team1, team2 } = req.query as { team1?: string; team2?: string };
-  if (!team1 || !team2) return res.status(400).json({error:"team1 and team2 required"});
-  const t1 = db.prepare("SELECT t.*, l.name as leagueName FROM teams t JOIN leagues l ON l.id = t.league WHERE t.id = ?").get(team1) as any;
-  const t2 = db.prepare("SELECT t.*, l.name as leagueName FROM teams t JOIN leagues l ON l.id = t.league WHERE t.id = ?").get(team2) as any;
-  if (!t1 || !t2) return res.status(404).json({error:"Team not found"});
-  const squad = (tid:string) => db.prepare(
-    "SELECT COUNT(*) as total, COALESCE(SUM(s.goals),0) as goals, COALESCE(SUM(s.assists),0) as assists, COALESCE(SUM(s.clean_sheets),0) as clean_sheets, COALESCE(AVG(s.appearances),0) as avgApps FROM players p LEFT JOIN player_season_stats s ON s.player_id = p.id AND s.season = '2024-25' WHERE p.team_id = ?"
-  ).get(tid) as any;
-  const posCount = (tid:string) => {
-    const rows = db.prepare("SELECT position, COUNT(*) as cnt FROM players WHERE team_id = ? GROUP BY position").all(tid) as any[];
-    const m: Record<string,number> = {};
-    for (const r of rows) m[r.position] = r.cnt;
-    return m;
-  };
-  const h2h = db.prepare(
-    "SELECT m.*, l.name as leagueName FROM matches m JOIN leagues l ON l.id = m.leagueId WHERE (LOWER(m.homeTeamName)=LOWER(?) AND LOWER(m.awayTeamName)=LOWER(?)) OR (LOWER(m.homeTeamName)=LOWER(?) AND LOWER(m.awayTeamName)=LOWER(?)) ORDER BY m.matchDate DESC LIMIT 10"
-  ).all(t1.name,t2.name,t2.name,t1.name) as any[];
-  const s1 = squad(team1), s2 = squad(team2);
-  res.json({
-    team1:{id:t1.id,name:t1.name,country:t1.country,league:t1.leagueName,logo_url:t1.logo_url,
-      squad:{total:s1.total||0,goals:s1.goals||0,assists:s1.assists||0,clean_sheets:s1.clean_sheets||0,avgApps:Math.round(s1.avgApps||0)},positions:posCount(team1)},
-    team2:{id:t2.id,name:t2.name,country:t2.country,league:t2.leagueName,logo_url:t2.logo_url,
-      squad:{total:s2.total||0,goals:s2.goals||0,assists:s2.assists||0,clean_sheets:s2.clean_sheets||0,avgApps:Math.round(s2.avgApps||0)},positions:posCount(team2)},
-    h2hMatches:h2h.map((m:any)=>({id:m.id,leagueName:m.leagueName,homeTeamName:m.homeTeamName,awayTeamName:m.awayTeamName,matchDate:m.matchDate,homeWinOdds:m.homeWinOdds,drawOdds:m.drawOdds,awayWinOdds:m.awayWinOdds})),
-  });
 });
 
 app.get("/api/players", (req, res) => {
