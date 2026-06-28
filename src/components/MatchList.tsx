@@ -1,10 +1,15 @@
 import { MatchCard } from "./MatchCard";
+import { MatchDetail } from "./MatchDetail";
 import { useEffect, useState } from "react";
-import { getLeagues, getUpcomingMatches, generateBulkPredictions } from "../api";
+import { getLeagues, getUpcomingMatches, generateBulkPredictions, Match } from "../api";
 
-export function MatchList() {
+export function MatchList({ watchlistedIds, onToggleWatchlist, onWatchlistChange }: {
+  watchlistedIds?: Set<string>;
+  onToggleWatchlist?: (matchId: string) => void;
+  onWatchlistChange?: () => void;
+}) {
   const [selectedLeague, setSelectedLeague] = useState<string>("");
-  const [daysAhead, setDaysAhead] = useState(7);
+  const [daysAhead, setDaysAhead] = useState(90);
   const [leagues, setLeagues] = useState<any[]>([]);
   const [matches, setMatches] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -12,6 +17,7 @@ export function MatchList() {
   const [predicting, setPredicting] = useState<Record<string, boolean>>({});
   const [bulkLoading, setBulkLoading] = useState(false);
   const [page, setPage] = useState(1);
+  const [detailMatch, setDetailMatch] = useState<Match | null>(null);
   const pageSize = 10;
 
   useEffect(() => {
@@ -52,15 +58,15 @@ export function MatchList() {
   return (
     <div className="space-y-6">
       {/* Filters */}
-      <div className="flex flex-wrap gap-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="flex-1">
+          <label className="block text-xs font-medium text-gray-500 mb-1.5">
             League
           </label>
           <select
             value={selectedLeague}
             onChange={(e) => setSelectedLeague(e.target.value)}
-            className="border border-gray-300 rounded-md px-3 py-2 bg-white"
+            className="w-full border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-shadow"
           >
             <option value="">All Leagues</option>
             {leagues.map((league) => (
@@ -70,20 +76,21 @@ export function MatchList() {
             ))}
           </select>
         </div>
-        
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Days Ahead
+
+        <div className="flex-1">
+          <label className="block text-xs font-medium text-gray-500 mb-1.5">
+            Date Range
           </label>
           <select
             value={daysAhead}
             onChange={(e) => setDaysAhead(Number(e.target.value))}
-            className="border border-gray-300 rounded-md px-3 py-2 bg-white"
+            className="w-full border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-shadow"
           >
             <option value={1}>Today</option>
             <option value={3}>Next 3 days</option>
             <option value={7}>Next week</option>
-            <option value={14}>Next 2 weeks</option>
+            <option value={30}>Next 30 days</option>
+            <option value={90}>Next 90 days</option>
           </select>
         </div>
       </div>
@@ -92,10 +99,10 @@ export function MatchList() {
       {matches.length === 0 ? (
         <div className="text-center py-12">
           <div className="text-6xl mb-4">⚽</div>
-          <h3 className="text-lg font-medium text-gray-900 mb-2">
+          <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2">
             No matches found
           </h3>
-          <p className="text-gray-500">
+          <p className="text-gray-500 dark:text-gray-400">
             Try adjusting your filters or check back later
           </p>
         </div>
@@ -129,16 +136,16 @@ export function MatchList() {
               {bulkLoading ? "Predicting all..." : "Predict All"}
             </button>
           </div>
-          <div className="grid gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {matches
               .slice((page - 1) * pageSize, page * pageSize)
               .map((match) => (
-              <MatchCard key={match.id} match={match} prediction={match.prediction} />
+              <MatchCard key={match.id} match={match} prediction={match.prediction} onDetail={() => setDetailMatch(match as any)} isWatchlisted={watchlistedIds?.has(match.id)} onToggleWatchlist={onToggleWatchlist} />
             ))}
           </div>
           {/* Pagination */}
           <div className="flex items-center justify-between pt-4">
-            <div className="text-sm text-gray-600">
+            <div className="text-sm text-gray-600 dark:text-gray-400">
               Showing{" "}
               {Math.min((page - 1) * pageSize + 1, matches.length)}-
               {Math.min(page * pageSize, matches.length)} of {matches.length}
@@ -147,7 +154,7 @@ export function MatchList() {
               <button
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={page === 1}
-                className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white hover:bg-gray-50"
+                className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300"
               >
                 Prev
               </button>
@@ -156,13 +163,16 @@ export function MatchList() {
                   setPage((p) => (p * pageSize < matches.length ? p + 1 : p))
                 }
                 disabled={page * pageSize >= matches.length}
-                className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white hover:bg-gray-50"
+                className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300"
               >
                 Next
               </button>
             </div>
           </div>
         </>
+      )}
+      {detailMatch && (
+        <MatchDetail match={detailMatch} onClose={() => setDetailMatch(null)} />
       )}
     </div>
   );

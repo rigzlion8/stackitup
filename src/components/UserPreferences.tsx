@@ -150,14 +150,14 @@ export function UserPreferences() {
         <h3 className="text-lg font-medium text-gray-900 mb-4">
           Timezone
         </h3>
-        <select
-          value={formData.timezone}
-          onChange={(e) => setFormData(prev => ({
-            ...prev,
-            timezone: e.target.value
-          }))}
-          className="border border-gray-300 rounded-md px-3 py-2 bg-white w-full max-w-xs"
-        >
+          <select
+            value={formData.timezone}
+            onChange={(e) => setFormData(prev => ({
+              ...prev,
+              timezone: e.target.value
+            }))}
+            className="w-full border border-gray-200 rounded-lg px-3 py-2 bg-white text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-shadow"
+          >
           <option value="UTC">UTC</option>
           <option value="Europe/London">London (GMT/BST)</option>
           <option value="Europe/Paris">Paris (CET/CEST)</option>

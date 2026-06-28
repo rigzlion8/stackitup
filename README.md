@@ -1,4 +1,4 @@
-## StackItUp - Sports Betting Analyzer
+## Maisha Predictions
 
 Local development:
 

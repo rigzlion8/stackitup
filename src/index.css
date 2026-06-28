@@ -11,6 +11,16 @@
   @apply text-slate-600;
 }
 
+@layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 body {
   font-family:
     "Inter Variable",
@@ -30,6 +40,20 @@ body {
     "Noto Color Emoji";
   color: var(--color-dark);
   background: var(--color-light);
+}
+
+.dark body,
+body.dark {
+  color-scheme: dark;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* only use this to update the style of the auth input fields. use a different class for all other input fields */

@@ -1,20 +1,37 @@
 import { useEffect, useState } from "react";
-import { getTodaysRecommendations } from "../api";
+import { getTodaysRecommendations, Match } from "../api";
 import { MatchCard } from "./MatchCard.tsx";
+import { MatchDetail } from "./MatchDetail.tsx";
 
 export function DailyRecommendations() {
   const [recommendations, setRecommendations] = useState<null | Awaited<ReturnType<typeof getTodaysRecommendations>>>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
+  const [detailMatch, setDetailMatch] = useState<Match | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [days, setDays] = useState(1);
   const pageSize = 10;
 
-  useEffect(() => {
-    getTodaysRecommendations()
+  const fetchTips = () => {
+    setLoading(true);
+    setError(null);
+    getTodaysRecommendations(days)
       .then(setRecommendations)
       .catch((e) => setError(e.message || "Failed to load"))
       .finally(() => setLoading(false));
-  }, []);
+  };
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await fetchTips();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => { fetchTips(); }, [days]);
 
   if (loading) {
     return (
@@ -75,35 +92,71 @@ export function DailyRecommendations() {
         </div>
       </div>
 
+      {/* Refresh + Date Range */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-medium text-gray-500">Show tips for:</label>
+          <select
+            value={days}
+            onChange={(e) => setDays(Number(e.target.value))}
+            className="border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-1.5 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+          >
+            <option value={1}>Today</option>
+            <option value={2}>Next 2 days</option>
+            <option value={7}>Next week</option>
+          </select>
+        </div>
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors cursor-pointer flex items-center gap-2"
+        >
+          <svg className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          {refreshing ? "Refreshing..." : "Refresh Tips"}
+        </button>
+      </div>
+
       {/* Paged Recommendations */}
-      <div className="grid gap-4">
-        {slice.map((rec, idx) => {
-          const prev = slice[idx - 1];
-          const showHeader =
-            !prev || prev.recommendationType !== rec.recommendationType;
+      {(() => {
+        const sections: { type: string; items: typeof slice }[] = [];
+        slice.forEach((rec) => {
+          const last = sections[sections.length - 1];
+          if (last && last.type === rec.recommendationType) {
+            last.items.push(rec);
+          } else {
+            sections.push({ type: rec.recommendationType, items: [rec] });
+          }
+        });
+        return sections.map((section) => {
           const header =
-            rec.recommendationType === "safe"
+            section.type === "safe"
               ? { icon: "🛡️", text: "Safe Bets (High Confidence)" }
-              : rec.recommendationType === "value"
+              : section.type === "value"
               ? { icon: "💰", text: "Value Bets (Good Odds)" }
               : { icon: "🎲", text: "Risky Bets (Higher Reward)" };
           return (
-            <div key={rec.match.id}>
-              {showHeader && (
-                <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center">
-                  <span className="mr-2">{header.icon}</span>
-                  {header.text}
-                </h3>
-              )}
-              <MatchCard
-                match={rec.match}
-                prediction={rec.prediction}
-                recommendationType={rec.recommendationType}
-              />
+            <div key={`${section.type}-${page}`} className="space-y-3">
+              <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <span>{header.icon}</span>
+                {header.text}
+              </h3>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {section.items.map((rec) => (
+                  <MatchCard
+                    key={rec.match.id}
+                    match={rec.match}
+                    prediction={rec.prediction}
+                    recommendationType={rec.recommendationType}
+                    onDetail={() => setDetailMatch(rec.match as Match)}
+                  />
+                ))}
+              </div>
             </div>
           );
-        })}
-      </div>
+        });
+      })()}
       <div className="flex items-center justify-between pt-4">
         <div className="text-sm text-gray-600">
           Showing{" "}
@@ -129,6 +182,9 @@ export function DailyRecommendations() {
           </button>
         </div>
       </div>
+      {detailMatch && (
+        <MatchDetail match={detailMatch} onClose={() => setDetailMatch(null)} />
+      )}
     </div>
   );
 }

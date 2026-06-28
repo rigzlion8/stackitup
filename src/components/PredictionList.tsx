@@ -1,14 +1,16 @@
 import { MatchCard } from "./MatchCard";
+import { MatchDetail } from "./MatchDetail";
 import { useEffect, useState } from "react";
-import { getHighConfidencePredictions } from "../api";
+import { getHighConfidencePredictions, Match } from "../api";
 
 export function PredictionsList() {
-  const [minConfidence, setMinConfidence] = useState(70);
-  const [limit, setLimit] = useState(10);
+  const [minConfidence, setMinConfidence] = useState(10);
+  const [limit, setLimit] = useState(50);
   const [pairs, setPairs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
+  const [detailMatch, setDetailMatch] = useState<Match | null>(null);
   const pageSize = 10;
 
   useEffect(() => {
@@ -42,16 +44,17 @@ export function PredictionsList() {
   return (
     <div className="space-y-6">
       {/* Filters */}
-      <div className="flex flex-wrap gap-4">
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="flex-1">
+          <label className="block text-xs font-medium text-gray-500 mb-1.5">
             Minimum Confidence
           </label>
           <select
             value={minConfidence}
             onChange={(e) => setMinConfidence(Number(e.target.value))}
-            className="border border-gray-300 rounded-md px-3 py-2 bg-white"
+            className="w-full border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-shadow"
           >
+            <option value={10}>10%+</option>
             <option value={50}>50%+</option>
             <option value={60}>60%+</option>
             <option value={70}>70%+</option>
@@ -59,17 +62,16 @@ export function PredictionsList() {
             <option value={90}>90%+</option>
           </select>
         </div>
-        
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Number of Results
+
+        <div className="flex-1">
+          <label className="block text-xs font-medium text-gray-500 mb-1.5">
+            Results
           </label>
           <select
             value={limit}
             onChange={(e) => setLimit(Number(e.target.value))}
-            className="border border-gray-300 rounded-md px-3 py-2 bg-white"
+            className="w-full border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-shadow"
           >
-            <option value={5}>5</option>
             <option value={10}>10</option>
             <option value={20}>20</option>
             <option value={50}>50</option>
@@ -79,18 +81,18 @@ export function PredictionsList() {
 
       {/* Predictions */}
       {pairs.length === 0 ? (
-        <div className="text-center py-12">
+          <div className="text-center py-12">
           <div className="text-6xl mb-4">🤖</div>
-          <h3 className="text-lg font-medium text-gray-900 mb-2">
+          <h3 className="text-lg font-medium text-gray-900 dark:text-gray-100 mb-2">
             No predictions found
           </h3>
-          <p className="text-gray-500">
+          <p className="text-gray-500 dark:text-gray-400">
             Try lowering the confidence threshold or check back later
           </p>
         </div>
       ) : (
         <>
-          <div className="grid gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {pairs
               .slice((page - 1) * pageSize, page * pageSize)
               .map((p) => (
@@ -98,6 +100,7 @@ export function PredictionsList() {
                   key={p.prediction.id}
                   match={p.match}
                   prediction={p.prediction}
+                  onDetail={() => setDetailMatch(p.match as Match)}
                 />
               ))}
           </div>
@@ -111,7 +114,7 @@ export function PredictionsList() {
               <button
                 onClick={() => setPage((p) => Math.max(1, p - 1))}
                 disabled={page === 1}
-                className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white hover:bg-gray-50"
+                className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300"
               >
                 Prev
               </button>
@@ -120,13 +123,16 @@ export function PredictionsList() {
                   setPage((p) => (p * pageSize < pairs.length ? p + 1 : p))
                 }
                 disabled={page * pageSize >= pairs.length}
-                className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white hover:bg-gray-50"
+                className="px-3 py-1.5 rounded border text-sm disabled:opacity-50 bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300"
               >
                 Next
               </button>
             </div>
           </div>
         </>
+      )}
+      {detailMatch && (
+        <MatchDetail match={detailMatch} onClose={() => setDetailMatch(null)} />
       )}
     </div>
   );

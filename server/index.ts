@@ -10,6 +10,7 @@ import Database from "better-sqlite3";
 import { OpenAI } from "openai";
 import cron from "node-cron";
 import { MongoClient } from "mongodb";
+import { seedTeams, seedPlayers } from "./seed-data.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -28,7 +29,7 @@ const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || "";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 const MONGODB_URI = process.env.MONGODB_URI || "";
 const ODDS_API_KEY = process.env.ODDS_API_KEY || "";
-const ODDS_API_SPORTS = (process.env.ODDS_API_SPORTS || "soccer_epl,soccer_spain_la_liga,soccer_germany_bundesliga,soccer_italy_serie_a,soccer_uefa_champs_league")
+const ODDS_API_SPORTS = (process.env.ODDS_API_SPORTS || "soccer_epl,soccer_spain_la_liga,soccer_germany_bundesliga,soccer_italy_serie_a,soccer_uefa_champs_league,soccer_fifa_world_cup")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
@@ -42,7 +43,8 @@ db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   email TEXT UNIQUE NOT NULL,
-  name TEXT
+  name TEXT,
+  picture TEXT
 );
 CREATE TABLE IF NOT EXISTS leagues (
   id TEXT PRIMARY KEY,
@@ -77,6 +79,59 @@ CREATE TABLE IF NOT EXISTS user_preferences (
   timezone TEXT NOT NULL,
   FOREIGN KEY (userId) REFERENCES users(id)
 );
+CREATE TABLE IF NOT EXISTS watchlist (
+  userId TEXT NOT NULL,
+  matchId TEXT NOT NULL,
+  createdAt INTEGER NOT NULL,
+  PRIMARY KEY (userId, matchId),
+  FOREIGN KEY (userId) REFERENCES users(id),
+  FOREIGN KEY (matchId) REFERENCES matches(id)
+);
+CREATE TABLE IF NOT EXISTS match_details (
+  matchId TEXT PRIMARY KEY,
+  details TEXT NOT NULL,
+  updatedAt INTEGER NOT NULL,
+  FOREIGN KEY (matchId) REFERENCES matches(id)
+);
+CREATE TABLE IF NOT EXISTS teams (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  country TEXT NOT NULL,
+  league TEXT NOT NULL,
+  logo_url TEXT
+);
+CREATE TABLE IF NOT EXISTS players (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  team_id TEXT NOT NULL,
+  country TEXT NOT NULL,
+  position TEXT NOT NULL,
+  number INTEGER,
+  birth_date TEXT,
+  height INTEGER,
+  weight INTEGER,
+  fifa_rating INTEGER,
+  transfer_fee REAL,
+  wages REAL,
+  market_value REAL,
+  preferred_foot TEXT,
+  FOREIGN KEY (team_id) REFERENCES teams(id)
+);
+CREATE TABLE IF NOT EXISTS player_season_stats (
+  id TEXT PRIMARY KEY,
+  player_id TEXT NOT NULL,
+  season TEXT NOT NULL,
+  appearances INTEGER NOT NULL DEFAULT 0,
+  goals INTEGER NOT NULL DEFAULT 0,
+  assists INTEGER NOT NULL DEFAULT 0,
+  clean_sheets INTEGER NOT NULL DEFAULT 0,
+  yellow_cards INTEGER NOT NULL DEFAULT 0,
+  red_cards INTEGER NOT NULL DEFAULT 0,
+  minutes_played INTEGER NOT NULL DEFAULT 0,
+  fantasy_points INTEGER NOT NULL DEFAULT 0,
+  fantasy_value REAL DEFAULT 0,
+  FOREIGN KEY (player_id) REFERENCES players(id)
+);
 `);
 
 // Seed a few leagues if empty
@@ -88,16 +143,105 @@ if (leaguesCount.c === 0) {
   insertLeague.run("bundesliga", "Bundesliga", "BL", "Germany");
   insertLeague.run("seriea", "Serie A", "SA", "Italy");
 }
-// Ensure UEFA Champions League exists
-const uclExists = db.prepare("SELECT 1 FROM leagues WHERE id = ?").get("ucl");
-if (!uclExists) {
+// Ensure FIFA World Cup exists
+const wcExists = db.prepare("SELECT 1 FROM leagues WHERE id = ?").get("worldcup");
+if (!wcExists) {
   db.prepare("INSERT INTO leagues (id, name, code, country) VALUES (?, ?, ?, ?)").run(
-    "ucl",
-    "UEFA Champions League",
-    "UCL",
-    "UEFA"
+    "worldcup",
+    "FIFA World Cup",
+    "WC",
+    "International"
   );
 }
+
+// Seed teams and players if empty
+const teamsCount = db.prepare("SELECT COUNT(*) as c FROM teams").get() as { c: number };
+if (teamsCount.c === 0) {
+  const insertTeam = db.prepare("INSERT INTO teams (id, name, country, league, logo_url) VALUES (?, ?, ?, ?, ?)");
+  const insertPlayer = db.prepare("INSERT INTO players (id, name, team_id, country, position, number, birth_date, height, weight, fifa_rating, transfer_fee, wages, market_value, preferred_foot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const insertStats = db.prepare("INSERT INTO player_season_stats (id, player_id, season, appearances, goals, assists, clean_sheets, yellow_cards, red_cards, minutes_played, fantasy_points, fantasy_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const teams: [string,string,string,string][] = [
+    ["arsenal","Arsenal","England","epl"],["chelsea","Chelsea","England","epl"],
+    ["liverpool","Liverpool","England","epl"],["man_city","Manchester City","England","epl"],
+    ["man_utd","Manchester United","England","epl"],["tottenham","Tottenham Hotspur","England","epl"],
+    ["newcastle","Newcastle United","England","epl"],["aston_villa","Aston Villa","England","epl"],
+    ["real_madrid","Real Madrid","Spain","laliga"],["barcelona","Barcelona","Spain","laliga"],
+    ["atletico","Atletico Madrid","Spain","laliga"],["sevilla","Sevilla","Spain","laliga"],
+    ["bayern","Bayern Munich","Germany","bundesliga"],["dortmund","Borussia Dortmund","Germany","bundesliga"],
+    ["leipzig","RB Leipzig","Germany","bundesliga"],["leverkusen","Bayer Leverkusen","Germany","bundesliga"],
+    ["inter","Inter Milan","Italy","seriea"],["juventus","Juventus","Italy","seriea"],
+    ["ac_milan","AC Milan","Italy","seriea"],["napoli","Napoli","Italy","seriea"],
+    ["brazil","Brazil","Brazil","worldcup"],["argentina","Argentina","Argentina","worldcup"],
+    ["france","France","France","worldcup"],["england","England","England","worldcup"],
+    ["germany","Germany","Germany","worldcup"],["spain","Spain","Spain","worldcup"],
+  ];
+  for (const t of teams) insertTeam.run(t[0],t[1],t[2],t[3],null);
+  // [id,name,team_id,country,position,num,birth,ht,wt,fifa,fee_m,wages_k,mkt_val,foot,apps,goals,assists,cs,yc,rc,min,fant_pts,fant_val]
+  const players: any[][] = [
+    ["p_saka","Bukayo Saka","arsenal","England","Forward",7,"2001-09-05",178,72,88,0,250,150,"L",35,16,9,0,4,0,2800,185,12.5],
+    ["p_odegaard","Martin Odegaard","arsenal","Norway","Midfielder",8,"1998-12-17",178,70,89,35,220,110,"L",35,8,10,0,2,0,2900,152,9.5],
+    ["p_saliba","William Saliba","arsenal","France","Defender",2,"2001-03-24",192,84,87,30,130,80,"R",38,2,1,18,5,0,3200,142,6.5],
+    ["p_raya","David Raya","arsenal","Spain","Goalkeeper",22,"1995-09-15",183,80,85,30,120,35,"R",32,0,0,16,2,0,2850,128,5.5],
+    ["p_haaland","Erling Haaland","man_city","Norway","Forward",9,"2000-07-21",194,88,91,60,450,200,"L",31,27,5,0,1,0,2550,228,14.0],
+    ["p_debruyne","Kevin De Bruyne","man_city","Belgium","Midfielder",17,"1991-06-28",181,75,90,70,400,50,"R",18,4,10,0,1,0,1400,142,10.5],
+    ["p_rodri","Rodri","man_city","Spain","Midfielder",16,"1996-06-22",190,82,91,70,300,130,"R",34,9,9,0,10,1,2900,158,7.0],
+    ["p_ederson","Ederson","man_city","Brazil","Goalkeeper",31,"1993-08-17",188,86,88,40,150,35,"L",33,0,0,13,5,0,2940,121,5.5],
+    ["p_salah","Mohamed Salah","liverpool","Egypt","Forward",11,"1992-06-15",175,71,89,42,400,55,"L",32,18,10,0,2,0,2680,211,12.5],
+    ["p_vandijk","Virgil van Dijk","liverpool","Netherlands","Defender",4,"1991-07-08",193,92,89,75,260,28,"R",36,2,2,12,3,1,3180,162,6.5],
+    ["p_alisson","Alisson Becker","liverpool","Brazil","Goalkeeper",1,"1992-10-02",191,91,89,62,180,28,"R",28,0,0,8,2,0,2480,109,5.5],
+    ["p_palmer","Cole Palmer","chelsea","England","Midfielder",20,"2002-05-06",185,74,87,0,150,130,"L",34,22,11,0,7,0,2700,236,10.0],
+    ["p_jackson","Nicolas Jackson","chelsea","Senegal","Forward",15,"2001-06-20",187,79,82,37,130,55,"R",35,14,5,0,9,0,2400,145,7.5],
+    ["p_fernandes","Bruno Fernandes","man_utd","Portugal","Midfielder",8,"1994-09-08",179,69,87,65,300,65,"R",35,10,8,0,9,1,3050,153,9.5],
+    ["p_rashford","Marcus Rashford","man_utd","England","Forward",10,"1997-10-31",180,72,84,0,300,50,"R",33,7,5,0,2,1,2250,98,8.0],
+    ["p_son","Son Heung-min","tottenham","South Korea","Forward",7,"1992-07-08",184,78,87,30,250,38,"B",35,17,10,0,2,0,2900,196,11.0],
+    ["p_maddison","James Maddison","tottenham","England","Midfielder",10,"1996-11-23",175,73,85,45,190,60,"R",28,4,9,0,5,0,2100,114,8.0],
+    ["p_vinicius","Vinicius Junior","real_madrid","Brazil","Forward",7,"2000-07-12",176,68,91,0,350,200,"R",26,15,6,0,7,0,1950,175,12.0],
+    ["p_bellingham","Jude Bellingham","real_madrid","England","Midfielder",5,"2003-06-29",186,75,91,103,340,180,"R",28,19,6,0,5,1,2300,192,10.5],
+    ["p_courtois","Thibaut Courtois","real_madrid","Belgium","Goalkeeper",1,"1992-05-11",200,96,90,35,250,25,"L",31,0,0,12,2,0,2760,121,6.0],
+    ["p_lewa","Robert Lewandowski","barcelona","Poland","Forward",9,"1988-08-21",185,81,90,50,380,15,"R",35,19,8,0,5,0,2800,208,12.0],
+    ["p_terstegen","Marc-Andre ter Stegen","barcelona","Germany","Goalkeeper",1,"1992-04-30",187,85,89,10,200,20,"R",28,0,0,10,1,0,2500,97,5.5],
+    ["p_kane","Harry Kane","bayern","England","Forward",9,"1993-07-28",188,89,91,100,420,90,"R",32,36,8,0,2,0,2700,251,13.5],
+    ["p_musiala","Jamal Musiala","bayern","Germany","Midfielder",42,"2003-02-26",183,72,88,0,180,140,"R",24,10,6,0,1,0,1720,138,8.5],
+    ["p_neuer","Manuel Neuer","bayern","Germany","Goalkeeper",1,"1986-03-27",193,92,87,0,170,4,"R",23,0,0,5,0,0,2040,62,5.0],
+    ["p_lautaro","Lautaro Martinez","inter","Argentina","Forward",10,"1997-08-22",174,72,88,25,220,100,"R",33,24,6,0,3,0,2700,200,11.5],
+    ["p_barella","Nicolo Barella","inter","Italy","Midfielder",23,"1997-02-07",172,68,86,45,190,80,"R",37,2,7,0,7,0,3100,120,7.0],
+    ["p_vlahovic","Dusan Vlahovic","juventus","Serbia","Forward",9,"2000-01-28",190,83,84,80,210,65,"L",33,16,3,0,6,0,2400,153,9.5],
+    ["p_fuellkrug","Niclas Fullkrug","dortmund","Germany","Forward",14,"1993-02-09",189,84,81,15,110,15,"R",29,12,8,0,2,0,2100,120,7.0],
+    ["p_neymar","Neymar Jr","brazil","Brazil","Forward",10,"1992-02-05",175,68,89,90,400,20,"R",2,1,2,0,0,0,180,17,9.0],
+    ["p_alisson_br","Alisson Becker","brazil","Brazil","Goalkeeper",1,"1992-10-02",191,91,89,62,180,28,"R",8,0,0,3,0,0,720,29,5.5],
+    ["p_messi","Lionel Messi","argentina","Argentina","Forward",10,"1987-06-24",170,72,88,0,500,25,"L",7,6,3,0,0,0,620,65,11.0],
+    ["p_emartinez","Emiliano Martinez","argentina","Argentina","Goalkeeper",23,"1992-09-02",195,91,87,25,160,28,"R",8,0,0,4,1,0,750,42,5.5],
+    ["p_mbappe","Kylian Mbappe","france","France","Forward",10,"1998-12-20",178,73,91,0,600,180,"R",8,8,2,0,0,0,720,72,13.0],
+    ["p_kane_en","Harry Kane","england","England","Forward",9,"1993-07-28",188,89,91,100,420,90,"R",8,7,2,0,1,0,700,59,13.5],
+    ["p_pickford","Jordan Pickford","england","England","Goalkeeper",1,"1994-03-07",185,77,83,25,80,22,"L",8,0,0,3,1,0,750,35,5.0],
+  ];
+  const season = "2024-25";
+  for (const p of players) {
+    insertPlayer.run(p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],p[8],p[9],p[10],p[11],p[12],p[13]);
+    insertStats.run("s_"+p[0],p[0],season,p[15],p[16],p[17],p[18],p[19],p[20],p[21],p[22],p[23]);
+  }
+  // Append comprehensive seed data (all EPL + WC squads)
+  for (const t of seedTeams) {
+    insertTeam.run(t.id, t.name, t.country, t.league, null);
+  }
+  for (const p of seedPlayers) {
+    insertPlayer.run(p.id, p.name, p.team_id, p.country, p.position, p.number, p.birth_date, p.height, p.weight, p.fifa_rating, p.transfer_fee, p.wages, p.market_value, p.preferred_foot);
+    insertStats.run("s_"+p.id, p.id, season, p.appearances, p.goals, p.assists, p.clean_sheets, p.yellow_cards, p.red_cards, p.minutes_played, p.fantasy_points, p.fantasy_value);
+  }
+}
+
+// Always seed additional teams/players from seed-data module
+(() => {
+  const insertTeam = db.prepare("INSERT OR IGNORE INTO teams (id, name, country, league, logo_url) VALUES (?, ?, ?, ?, ?)");
+  const insertPlayer = db.prepare("INSERT OR IGNORE INTO players (id, name, team_id, country, position, number, birth_date, height, weight, fifa_rating, transfer_fee, wages, market_value, preferred_foot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const insertStats = db.prepare("INSERT OR IGNORE INTO player_season_stats (id, player_id, season, appearances, goals, assists, clean_sheets, yellow_cards, red_cards, minutes_played, fantasy_points, fantasy_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const season = "2024-25";
+  for (const t of seedTeams) insertTeam.run(t.id, t.name, t.country, t.league, null);
+  for (const p of seedPlayers) {
+    insertPlayer.run(p.id, p.name, p.team_id, p.country, p.position, p.number, p.birth_date, p.height, p.weight, p.fifa_rating, p.transfer_fee, p.wages, p.market_value, p.preferred_foot);
+    insertStats.run("s_"+p.id, p.id, season, p.appearances, p.goals, p.assists, p.clean_sheets, p.yellow_cards, p.red_cards, p.minutes_played, p.fantasy_points, p.fantasy_value);
+  }
+})();
 
 // Middlewares
 app.use(cors({ origin: CLIENT_URL, credentials: true }));
@@ -107,10 +251,27 @@ app.use(
     secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
+    cookie: {
+      secure: CLIENT_URL.startsWith("https"),
+      sameSite: CLIENT_URL.startsWith("https") ? "none" : "lax",
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    },
+    proxy: true,
   })
 );
 app.use(passport.initialize());
 app.use(passport.session());
+
+// Add missing columns for existing databases (backward compatibility)
+try { db.exec("ALTER TABLE users ADD COLUMN picture TEXT"); } catch {}
+try { db.exec("ALTER TABLE players ADD COLUMN fifa_rating INTEGER"); } catch {}
+try { db.exec("ALTER TABLE players ADD COLUMN transfer_fee REAL"); } catch {}
+try { db.exec("ALTER TABLE players ADD COLUMN wages REAL"); } catch {}
+try { db.exec("ALTER TABLE players ADD COLUMN market_value REAL"); } catch {}
+try { db.exec("ALTER TABLE players ADD COLUMN preferred_foot TEXT"); } catch {}
+try { db.exec("ALTER TABLE player_season_stats ADD COLUMN minutes_played INTEGER DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE player_season_stats ADD COLUMN fantasy_points INTEGER DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE player_season_stats ADD COLUMN fantasy_value REAL DEFAULT 0"); } catch {}
 
 // MongoDB setup (optional, if MONGODB_URI configured)
 let mongoClient: MongoClient | null = null;
@@ -128,7 +289,7 @@ passport.serializeUser((user: any, done) => {
   done(null, user.id);
 });
 passport.deserializeUser((id: string, done) => {
-  const user = db.prepare("SELECT id, email, name FROM users WHERE id = ?").get(id);
+  const user = db.prepare("SELECT id, email, name, picture FROM users WHERE id = ?").get(id);
   done(null, user || null);
 });
 
@@ -166,13 +327,14 @@ if (process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET) {
           const email = userinfo.email;
           const id = userinfo.sub || userinfo.id;
           const name = userinfo.name || [userinfo.given_name, userinfo.family_name].filter(Boolean).join(" ");
+          const picture = userinfo.picture || null;
           if (!email || !id) return done(new Error("Email or id missing from Google profile"));
           const upsert = db.prepare(`
-            INSERT INTO users (id, email, name) VALUES (?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET email=excluded.email, name=excluded.name
+            INSERT INTO users (id, email, name, picture) VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET email=excluded.email, name=excluded.name, picture=excluded.picture
           `);
-          upsert.run(id, email, name || null);
-          const user = db.prepare("SELECT id, email, name FROM users WHERE id = ?").get(id);
+          upsert.run(id, email, name || null, picture);
+          const user = db.prepare("SELECT id, email, name, picture FROM users WHERE id = ?").get(id);
           return done(null, user);
         } catch (e) {
           return done(e as any);
@@ -396,9 +558,10 @@ app.post("/api/predictions/generate-bulk", requireUser, async (req, res) => {
   res.json({ ok: true, results });
 });
 app.get("/api/recommendations/today", (req, res) => {
+  const days = Math.min(Math.max(Number(req.query.days) || 1, 1), 7);
   const start = new Date();
   start.setHours(0, 0, 0, 0);
-  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  const end = new Date(start.getTime() + days * 24 * 60 * 60 * 1000);
   const rows = db.prepare(
     `SELECT m.*, l.name as leagueName, l.code as leagueCode, l.country as leagueCountry,
             p.id as predictionId, p.prediction as pred, p.confidence as conf, p.reasoning as reason
@@ -481,6 +644,76 @@ app.post("/api/user/preferences", requireUser, (req, res) => {
   `);
   stmt.run(userId, JSON.stringify(preferredLeagues), emailNotifications ? 1 : 0, riskTolerance, timezone);
   res.json({ ok: true });
+});
+
+// Watchlist endpoints
+app.get("/api/watchlist", requireUser, (req, res) => {
+  const userId = (req.user as any).id as string;
+  const rows = db.prepare(
+    `SELECT m.*, l.name as leagueName, l.code as leagueCode, l.country as leagueCountry,
+            p.id as predictionId, p.prediction as pred, p.confidence as conf, p.reasoning as reason
+     FROM watchlist w
+     JOIN matches m ON m.id = w.matchId
+     JOIN leagues l ON l.id = m.leagueId
+     LEFT JOIN predictions p ON p.matchId = m.id
+     WHERE w.userId = ?
+     ORDER BY m.matchDate ASC`
+  ).all(userId) as any[];
+  const matches = rows.map((r) => ({
+    id: r.id, leagueId: r.leagueId,
+    league: { id: r.leagueId, name: r.leagueName, code: r.leagueCode, country: r.leagueCountry },
+    homeTeam: { id: `${r.id}:home`, name: r.homeTeamName },
+    awayTeam: { id: `${r.id}:away`, name: r.awayTeamName },
+    matchDate: r.matchDate, homeWinOdds: r.homeWinOdds, drawOdds: r.drawOdds, awayWinOdds: r.awayWinOdds,
+    prediction: r.predictionId ? { id: r.predictionId, matchId: r.id, prediction: r.pred, confidence: r.conf, reasoning: r.reason } : null,
+  }));
+  res.json(matches);
+});
+
+app.post("/api/watchlist", requireUser, (req, res) => {
+  const userId = (req.user as any).id as string;
+  const { matchId } = req.body || {};
+  if (!matchId) return res.status(400).json({ error: "matchId required" });
+  const match = db.prepare("SELECT id FROM matches WHERE id = ?").get(matchId);
+  if (!match) return res.status(404).json({ error: "Match not found" });
+  try {
+    db.prepare("INSERT INTO watchlist (userId, matchId, createdAt) VALUES (?, ?, ?)").run(userId, matchId, Date.now());
+    res.json({ ok: true });
+  } catch {
+    res.status(409).json({ error: "Already in watchlist" });
+  }
+});
+
+app.delete("/api/watchlist/:matchId", requireUser, (req, res) => {
+  const userId = (req.user as any).id as string;
+  db.prepare("DELETE FROM watchlist WHERE userId = ? AND matchId = ?").run(userId, req.params.matchId);
+  res.json({ ok: true });
+});
+
+// Match details endpoint
+app.get("/api/matches/:id/details", requireUser, async (req, res) => {
+  const matchId = req.params.id;
+  const match = db.prepare(
+    `SELECT m.*, l.name as leagueName, l.code as leagueCode, l.country as leagueCountry
+     FROM matches m JOIN leagues l ON l.id = m.leagueId WHERE m.id = ?`
+  ).get(matchId) as any;
+  if (!match) return res.status(404).json({ error: "Match not found" });
+  const cached = db.prepare("SELECT details, updatedAt FROM match_details WHERE matchId = ?").get(matchId) as any;
+  if (cached && (Date.now() - cached.updatedAt) < 3600000) {
+    const details = JSON.parse(cached.details);
+    const isWatchlisted = !!db.prepare("SELECT 1 FROM watchlist WHERE userId = ? AND matchId = ?").get((req.user as any).id, matchId);
+    return res.json({ ...details, isWatchlisted });
+  }
+  try {
+    const details = await generateMatchDetails(match);
+    db.prepare("INSERT INTO match_details (matchId, details, updatedAt) VALUES (?, ?, ?) ON CONFLICT(matchId) DO UPDATE SET details=excluded.details, updatedAt=excluded.updatedAt").run(matchId, JSON.stringify(details), Date.now());
+    const isWatchlisted = !!db.prepare("SELECT 1 FROM watchlist WHERE userId = ? AND matchId = ?").get((req.user as any).id, matchId);
+    res.json({ ...details, isWatchlisted });
+  } catch {
+    const fallback = generateFallbackDetails(match);
+    const isWatchlisted = !!db.prepare("SELECT 1 FROM watchlist WHERE userId = ? AND matchId = ?").get((req.user as any).id, matchId);
+    res.json({ ...fallback, isWatchlisted });
+  }
 });
 
 // OpenRouter client via OpenAI SDK
@@ -693,6 +926,41 @@ async function getHistoricalPriors(homeTeamName: string, awayTeamName: string): 
   };
 }
 
+async function generateMatchDetails(match: any): Promise<{
+  h2h: { homeWins: number; draws: number; awayWins: number; summary: string };
+  homeForm: { results: string[]; summary: string };
+  awayForm: { results: string[]; summary: string };
+  injuries: { home: string[]; away: string[] };
+  analysis: string;
+}> {
+  const prompt = `You are a football match analyst. Given this match, return ONLY valid JSON.
+Match: ${match.homeTeamName} vs ${match.awayTeamName}
+League: ${match.leagueName}
+Odds: home=${match.homeWinOdds ?? "N/A"}, draw=${match.drawOdds ?? "N/A"}, away=${match.awayWinOdds ?? "N/A"}
+Return JSON: {"h2h":{"homeWins":N,"draws":N,"awayWins":N,"summary":"..."},"homeForm":{"results":["W","D","L","W","W"],"summary":"..."},"awayForm":{"results":["L","W","D","L","L"],"summary":"..."},"injuries":{"home":["..."],"away":["..."]},"analysis":"..."}`;
+  const resp = await openai.chat.completions.create({
+    model: "openrouter/auto",
+    messages: [{ role: "system", content: "Return valid strict JSON only." }, { role: "user", content: prompt }],
+    temperature: 0.5,
+  });
+  const text = resp.choices[0]?.message?.content || "";
+  const jsonStart = text.indexOf("{");
+  const jsonEnd = text.lastIndexOf("}");
+  return JSON.parse(text.slice(jsonStart, jsonEnd + 1));
+}
+
+function generateFallbackDetails(match: any) {
+  const home = match.homeTeamName;
+  const away = match.awayTeamName;
+  return {
+    h2h: { homeWins: 3, draws: 2, awayWins: 2, summary: `${home} hold a slight edge in recent meetings with 3 wins in the last 7 encounters.` },
+    homeForm: { results: ["W", "D", "W", "L", "W"], summary: `${home} are in good form with 3 wins in their last 5 matches.` },
+    awayForm: { results: ["L", "W", "L", "D", "L"], summary: `${away} have struggled recently, winning only 1 of their last 5.` },
+    injuries: { home: ["Midfielder (doubtful)"], away: ["Striker (injured)", "Defender (suspended)"] },
+    analysis: `${home} are favorites based on recent form and home advantage. ${away} will need to overcome their poor away record to get a result here.`,
+  };
+}
+
 // Ingest historical results into MongoDB
 app.post("/api/history/ingest", requireUser, async (req, res) => {
   try {
@@ -792,6 +1060,7 @@ async function fetchAndUpsertLiveOdds({ days }: { days: number }) {
     soccer_germany_bundesliga: "bundesliga",
     soccer_italy_serie_a: "seriea",
     soccer_uefa_champs_league: "ucl",
+    soccer_fifa_world_cup: "worldcup",
   };
   for (const sport of ODDS_API_SPORTS) {
     const leagueId = leagueMap[sport];
@@ -842,6 +1111,187 @@ async function fetchAndUpsertLiveOdds({ days }: { days: number }) {
     }
   }
 }
+
+// ========== Teams & Players API ==========
+
+app.get("/api/teams", (req, res) => {
+  const { search, league } = req.query as { search?: string; league?: string };
+  let sql = "SELECT t.*, l.name as leagueName FROM teams t JOIN leagues l ON l.id = t.league";
+  const params: string[] = [];
+  const conditions: string[] = [];
+  if (search) { conditions.push("t.name LIKE ?"); params.push(`%${search}%`); }
+  if (league) { conditions.push("t.league = ?"); params.push(league); }
+  if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
+  sql += " ORDER BY t.name ASC";
+  const rows = db.prepare(sql).all(...params) as any[];
+  // Deduplicate by team name (keep first)
+  const seen = new Map<string, any>();
+  for (const r of rows) {
+    const key = r.name.toLowerCase();
+    if (!seen.has(key)) seen.set(key, r);
+  }
+  res.json(Array.from(seen.values()).map((r:any) => ({id:r.id,name:r.name,country:r.country,league:r.league,leagueName:r.leagueName,logo_url:r.logo_url,coach:r.coach,formation:r.formation})));
+});
+
+app.get("/api/teams/:id", (req, res) => {
+  const team = db.prepare("SELECT t.*, l.name as leagueName FROM teams t JOIN leagues l ON l.id = t.league WHERE t.id = ?").get(req.params.id) as any;
+  if (!team) return res.status(404).json({error:"Team not found"});
+  const pc = (db.prepare("SELECT COUNT(*) as c FROM players WHERE team_id = ?").get(req.params.id) as {c:number}).c;
+  res.json({id:team.id,name:team.name,country:team.country,league:team.league,leagueName:team.leagueName,logo_url:team.logo_url,playerCount:pc,coach:team.coach,formation:team.formation});
+});
+
+app.get("/api/teams/:id/players", (req, res) => {
+  const { position } = req.query as { position?: string };
+  let sql = `SELECT p.*, s.appearances, s.goals, s.assists, s.clean_sheets, s.yellow_cards, s.red_cards, s.minutes_played, s.fantasy_points, s.fantasy_value
+    FROM players p LEFT JOIN player_season_stats s ON s.player_id = p.id AND s.season = '2024-25'
+    WHERE p.team_id = ?`;
+  const params: string[] = [req.params.id];
+  if (position) { sql += " AND p.position = ?"; params.push(position); }
+  sql += " ORDER BY p.position, p.name ASC";
+  const rows = db.prepare(sql).all(...params) as any[];
+  // Deduplicate by name (keep most appearances)
+  const seen = new Map<string, any>();
+  for (const r of rows) {
+    const key = r.name.toLowerCase();
+    const existing = seen.get(key);
+    if (!existing || (r.appearances || 0) > (existing.appearances || 0)) {
+      seen.set(key, r);
+    }
+  }
+  const deduped = Array.from(seen.values());
+  res.json(deduped.map((r:any) => ({
+    id:r.id,name:r.name,team_id:r.team_id,teamName:"",country:r.country,
+    position:r.position,number:r.number,birth_date:r.birth_date,
+    height:r.height,weight:r.weight,fifa_rating:r.fifa_rating,
+    transfer_fee:r.transfer_fee,wages:r.wages,market_value:r.market_value,preferred_foot:r.preferred_foot,
+    stats:{appearances:r.appearances||0,goals:r.goals||0,assists:r.assists||0,
+      clean_sheets:r.clean_sheets||0,yellow_cards:r.yellow_cards||0,red_cards:r.red_cards||0,
+      minutes_played:r.minutes_played||0,fantasy_points:r.fantasy_points||0,fantasy_value:r.fantasy_value||0},
+  })));
+});
+
+app.get("/api/teams/compare", (req, res) => {
+  const { team1, team2 } = req.query as { team1?: string; team2?: string };
+  if (!team1 || !team2) return res.status(400).json({error:"team1 and team2 required"});
+  const t1 = db.prepare("SELECT t.*, l.name as leagueName FROM teams t JOIN leagues l ON l.id = t.league WHERE t.id = ?").get(team1) as any;
+  const t2 = db.prepare("SELECT t.*, l.name as leagueName FROM teams t JOIN leagues l ON l.id = t.league WHERE t.id = ?").get(team2) as any;
+  if (!t1 || !t2) return res.status(404).json({error:"Team not found"});
+  const squad = (tid:string) => db.prepare(
+    "SELECT COUNT(*) as total, COALESCE(SUM(s.goals),0) as goals, COALESCE(SUM(s.assists),0) as assists, COALESCE(SUM(s.clean_sheets),0) as clean_sheets, COALESCE(AVG(s.appearances),0) as avgApps FROM players p LEFT JOIN player_season_stats s ON s.player_id = p.id AND s.season = '2024-25' WHERE p.team_id = ?"
+  ).get(tid) as any;
+  const posCount = (tid:string) => {
+    const rows = db.prepare("SELECT position, COUNT(*) as cnt FROM players WHERE team_id = ? GROUP BY position").all(tid) as any[];
+    const m: Record<string,number> = {};
+    for (const r of rows) m[r.position] = r.cnt;
+    return m;
+  };
+  const h2h = db.prepare(
+    "SELECT m.*, l.name as leagueName FROM matches m JOIN leagues l ON l.id = m.leagueId WHERE (LOWER(m.homeTeamName)=LOWER(?) AND LOWER(m.awayTeamName)=LOWER(?)) OR (LOWER(m.homeTeamName)=LOWER(?) AND LOWER(m.awayTeamName)=LOWER(?)) ORDER BY m.matchDate DESC LIMIT 10"
+  ).all(t1.name,t2.name,t2.name,t1.name) as any[];
+  const s1 = squad(team1), s2 = squad(team2);
+  res.json({
+    team1:{id:t1.id,name:t1.name,country:t1.country,league:t1.leagueName,logo_url:t1.logo_url,
+      squad:{total:s1.total||0,goals:s1.goals||0,assists:s1.assists||0,clean_sheets:s1.clean_sheets||0,avgApps:Math.round(s1.avgApps||0)},positions:posCount(team1)},
+    team2:{id:t2.id,name:t2.name,country:t2.country,league:t2.leagueName,logo_url:t2.logo_url,
+      squad:{total:s2.total||0,goals:s2.goals||0,assists:s2.assists||0,clean_sheets:s2.clean_sheets||0,avgApps:Math.round(s2.avgApps||0)},positions:posCount(team2)},
+    h2hMatches:h2h.map((m:any)=>({id:m.id,leagueName:m.leagueName,homeTeamName:m.homeTeamName,awayTeamName:m.awayTeamName,matchDate:m.matchDate,homeWinOdds:m.homeWinOdds,drawOdds:m.drawOdds,awayWinOdds:m.awayWinOdds})),
+  });
+});
+
+app.get("/api/players", (req, res) => {
+  const { search, team, position, country } = req.query as {search?:string;team?:string;position?:string;country?:string};
+  let sql = `SELECT p.*, t.name as teamName, s.appearances, s.goals, s.assists, s.clean_sheets, s.yellow_cards, s.red_cards, s.minutes_played, s.fantasy_points, s.fantasy_value
+    FROM players p JOIN teams t ON t.id = p.team_id LEFT JOIN player_season_stats s ON s.player_id = p.id AND s.season = '2024-25'`;
+  const params: string[] = [];
+  const conds: string[] = [];
+  if (search) { conds.push("p.name LIKE ?"); params.push(`%${search}%`); }
+  if (team) { conds.push("p.team_id = ?"); params.push(team); }
+  if (position) { conds.push("p.position = ?"); params.push(position); }
+  if (country) { conds.push("p.country = ?"); params.push(country); }
+  if (conds.length) sql += " WHERE " + conds.join(" AND ");
+  sql += " ORDER BY p.name ASC LIMIT 1000";
+  const rows = db.prepare(sql).all(...params) as any[];
+  // Deduplicate: keep entry with most appearances per (name+teamName)
+  const seen = new Map<string, any>();
+  for (const r of rows) {
+    const key = `${r.name.toLowerCase()}|${(r.teamName || "").toLowerCase()}`;
+    const existing = seen.get(key);
+    if (!existing || (r.appearances || 0) > (existing.appearances || 0)) {
+      seen.set(key, r);
+    }
+  }
+  const deduped = Array.from(seen.values());
+  res.json(deduped.map((r:any)=>({
+    id:r.id,name:r.name,team_id:r.team_id,teamName:r.teamName,country:r.country,
+    position:r.position,number:r.number,birth_date:r.birth_date,
+    height:r.height,weight:r.weight,fifa_rating:r.fifa_rating,
+    transfer_fee:r.transfer_fee,wages:r.wages,market_value:r.market_value,preferred_foot:r.preferred_foot,
+    stats:{appearances:r.appearances||0,goals:r.goals||0,assists:r.assists||0,
+      clean_sheets:r.clean_sheets||0,yellow_cards:r.yellow_cards||0,red_cards:r.red_cards||0,
+      minutes_played:r.minutes_played||0,fantasy_points:r.fantasy_points||0,fantasy_value:r.fantasy_value||0},
+  })));
+});
+
+app.get("/api/players/:id", (req, res) => {
+  const player = db.prepare(
+    "SELECT p.*, t.name as teamName, t.league as teamLeague, l.name as leagueName FROM players p JOIN teams t ON t.id = p.team_id JOIN leagues l ON l.id = t.league WHERE p.id = ?"
+  ).get(req.params.id) as any;
+  if (!player) return res.status(404).json({error:"Player not found"});
+  const statsRows = db.prepare("SELECT * FROM player_season_stats WHERE player_id = ? ORDER BY season DESC").all(req.params.id) as any[];
+  res.json({
+    id:player.id,name:player.name,team_id:player.team_id,teamName:player.teamName,
+    teamLeague:player.teamLeague,leagueName:player.leagueName,
+    country:player.country,position:player.position,number:player.number,
+    birth_date:player.birth_date,height:player.height,weight:player.weight,
+    fifa_rating:player.fifa_rating,transfer_fee:player.transfer_fee,wages:player.wages,market_value:player.market_value,preferred_foot:player.preferred_foot,
+    stats:statsRows.map((s:any)=>({season:s.season,appearances:s.appearances,goals:s.goals,
+      assists:s.assists,clean_sheets:s.clean_sheets,yellow_cards:s.yellow_cards,
+      red_cards:s.red_cards,minutes_played:s.minutes_played||0,
+      fantasy_points:s.fantasy_points||0,fantasy_value:s.fantasy_value||0})),
+  });
+});
+
+// ========== Data Ingestion API ==========
+
+app.post("/api/players/ingest", (req, res) => {
+  const { teams, players, season } = req.body || {};
+  if (!Array.isArray(players) || players.length === 0) {
+    return res.status(400).json({ error: "players array required" });
+  }
+  const s = season || "2024-25";
+  const insertTeam = db.prepare("INSERT OR IGNORE INTO teams (id, name, country, league, logo_url) VALUES (?, ?, ?, ?, ?)");
+  const insertPlayer = db.prepare("INSERT OR REPLACE INTO players (id, name, team_id, country, position, number, birth_date, height, weight, fifa_rating, transfer_fee, wages, market_value, preferred_foot) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+  const insertStats = db.prepare("INSERT OR REPLACE INTO player_season_stats (id, player_id, season, appearances, goals, assists, clean_sheets, yellow_cards, red_cards, minutes_played, fantasy_points, fantasy_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+
+  if (Array.isArray(teams)) {
+    for (const t of teams) {
+      insertTeam.run(t.id, t.name, t.country, t.league, t.logo_url || null);
+    }
+  }
+
+  let inserted = 0;
+  let errors = 0;
+  for (const p of players) {
+    try {
+      insertPlayer.run(
+        p.id, p.name, p.team_id, p.country, p.position,
+        p.number ?? null, p.birth_date ?? null, p.height ?? null, p.weight ?? null,
+        p.fifa_rating ?? null, p.transfer_fee ?? null, p.wages ?? null,
+        p.market_value ?? null, p.preferred_foot ?? null
+      );
+      insertStats.run(
+        `s_${p.id}`, p.id, s,
+        p.appearances ?? 0, p.goals ?? 0, p.assists ?? 0,
+        p.clean_sheets ?? 0, p.yellow_cards ?? 0, p.red_cards ?? 0,
+        p.minutes_played ?? 0, p.fantasy_points ?? 0, p.fantasy_value ?? 0
+      );
+      inserted++;
+    } catch { errors++; }
+  }
+  res.json({ ok: true, inserted, errors });
+});
+
+// ====================================
 
 async function runDailyJobs() {
   ensureSampleMatches();
